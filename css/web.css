@@ -1,0 +1,568 @@
+/* ===========================
+   GLOBAL STYLES
+   =========================== */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+    background-color: #f4f6f8;
+    color: #222;
+}
+
+main {
+    padding: 16px;
+}
+
+button {
+    cursor: pointer;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    background-color: #0077c8;
+    color: #fff;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+}
+
+button:hover {
+    background-color: #005a96;
+}
+
+button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+input, select {
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    font-size: 0.9rem;
+    width: 100%;
+}
+
+label {
+    font-size: 0.85rem;
+    margin-bottom: 4px;
+    display: block;
+}
+
+footer {
+    margin-top: 24px;
+    padding: 12px;
+    text-align: center;
+    font-size: 0.8rem;
+    color: #666;
+    border-top: 1px solid #ddd;
+    background-color: #fafafa;
+}
+
+/* ===========================
+   LOGIN PAGE
+   =========================== */
+
+.login-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.login-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.login-logo {
+    width: 160px;
+    height: auto;
+    margin-bottom: 24px;
+}
+
+.login-form {
+    width: 280px;
+    padding: 16px;
+    border-radius: 8px;
+    background-color: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.login-form button {
+    margin-top: 8px;
+}
+
+.login-error {
+    color: #c0392b;
+    font-size: 0.8rem;
+    min-height: 16px;
+}
+
+/* ===========================
+   EMPLOYEE FORM PAGE
+   =========================== */
+
+.employee-form-container {
+    max-width: 800px;
+    margin: 24px auto;
+    background-color: #ffffff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.employee-form-container h1 {
+    margin-bottom: 16px;
+}
+
+#employeeForm {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.job-position-buttons {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.job-position-buttons button {
+    background-color: #e0e7ff;
+    color: #1f3b6d;
+}
+
+.job-position-buttons button.selected {
+    background-color: #0077c8;
+    color: #fff;
+}
+
+.employeeFormAvailabilityTxt {
+    font-size: 0.9rem;
+    color: #555;
+}
+
+#adjustAvailabilityBtn {
+    width: fit-content;
+}
+
+.employeeFormAvailabilityChart {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 6px;
+    background-color: #f9fafb;
+    border: 1px solid #e0e0e0;
+}
+
+.employeeFormTimes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.employeeFormTimes button {
+    background-color: #eef2ff;
+    color: #1f3b6d;
+    font-size: 0.8rem;
+}
+
+.employeeFormDayBlocks {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.employeeFormDay {
+    background-color: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    padding: 8px;
+}
+
+.employeeFormDay p {
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+}
+
+.day-block {
+    height: 16px;
+    border-radius: 4px;
+    background-color: #e5e7eb;
+    margin-bottom: 4px;
+}
+
+/* Time Off */
+
+.employeeFormTimeOff {
+    font-size: 0.85rem;
+    color: #555;
+}
+
+#timeOffForm {
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 6px;
+    background-color: #fef9c3;
+    border: 1px solid #facc15;
+}
+
+#timeOffForm div {
+    margin-top: 6px;
+    display: flex;
+    gap: 8px;
+}
+
+#timeOffForm button {
+    margin-top: 4px;
+}
+
+/* ===========================
+   SCHEDULE PAGE LAYOUT
+   =========================== */
+
+.schedule-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.schedule-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background-color: #ffffff;
+    border-bottom: 1px solid #ddd;
+}
+
+.schedule-header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.schedule-header-left h1 {
+    font-size: 1.2rem;
+}
+
+.week-selector,
+.lock-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+}
+
+.schedule-header-right {
+    display: flex;
+    gap: 8px;
+}
+
+.schedule-main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr) 260px;
+    gap: 12px;
+    padding: 12px 16px;
+}
+
+/* ===========================
+   LEFT SIDEBAR (EMPLOYEES)
+   =========================== */
+
+.employee-sidebar {
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.employee-sidebar h2 {
+    font-size: 1rem;
+    margin-bottom: 4px;
+}
+
+.employee-list {
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+
+.employee-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background-color: #f9fafb;
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+}
+
+.employee-item span {
+    flex: 1;
+}
+
+.remove-employee-btn {
+    background-color: #e53935;
+    color: #fff;
+    font-size: 0.75rem;
+    padding: 4px 8px;
+}
+
+.conflict-panel {
+    min-height: 80px;
+    border-radius: 4px;
+    border: 1px dashed #f39c12;
+    padding: 6px;
+    font-size: 0.8rem;
+    color: #c0392b;
+    background-color: #fff7e6;
+}
+
+/* ===========================
+   CENTER: SCHEDULE GRID
+   =========================== */
+
+.schedule-grid-container {
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.day-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.day-tab {
+    background-color: #eef2ff;
+    color: #1f3b6d;
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    border-radius: 4px;
+}
+
+.day-tab.active {
+    background-color: #0077c8;
+    color: #fff;
+}
+
+.schedule-grid {
+    position: relative;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    padding: 8px;
+    min-height: 260px;
+    background-color: #f9fafb;
+}
+
+/* Timeline */
+
+.timeline {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.timeline-hour {
+    flex: 1;
+    text-align: center;
+    font-size: 0.75rem;
+    padding: 4px 0;
+    border-radius: 4px;
+    background-color: #e5e7eb;
+}
+
+/* Shift blocks */
+
+.shift-block {
+    margin-top: 4px;
+    padding: 6px;
+    border-radius: 6px;
+    background-color: #dbeafe;
+    border: 1px solid #93c5fd;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.shift-block p {
+    margin-bottom: 2px;
+}
+
+.shift-block .assigned-employee {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+/* ===========================
+   RIGHT SIDEBAR (ASSIGNMENT)
+   =========================== */
+
+.assignment-sidebar {
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.assignment-sidebar h2 {
+    font-size: 1rem;
+}
+
+#selectedShiftLabel {
+    font-size: 0.85rem;
+    color: #555;
+}
+
+.available-employees {
+    flex: 1;
+    border-radius: 4px;
+    border: 1px solid #e0e0e0;
+    padding: 6px;
+    overflow-y: auto;
+    background-color: #f9fafb;
+}
+
+.available-employee {
+    padding: 4px 6px;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+    background-color: #eef2ff;
+    cursor: pointer;
+}
+
+.available-employee.selected {
+    background-color: #0077c8;
+    color: #fff;
+}
+
+.assignment-sidebar button {
+    width: 100%;
+}
+
+/* ===========================
+   RESPONSIVE
+   =========================== */
+
+@media (max-width: 1024px) {
+    .schedule-main {
+        grid-template-columns: 1fr;
+    }
+
+    .employee-sidebar,
+    .assignment-sidebar {
+        order: 2;
+    }
+
+    .schedule-grid-container {
+        order: 1;
+    }
+}
+
+@media (max-width: 600px) {
+    .schedule-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .schedule-header-right {
+        flex-wrap: wrap;
+    }
+
+    .login-form {
+        width: 90%;
+    }
+
+    .employee-form-container {
+        width: 95%;
+    }
+}
+
+.employeeFormAvailabilityChart {
+    transition: all 0.25s ease;
+    opacity: 1;
+}
+
+.employeeFormAvailabilityChart[hidden] {
+    opacity: 0;
+    height: 0;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+.availability-grid {
+    margin-top: 12px;
+    padding: 12px;
+    background-color: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+}
+
+#availabilityTable {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+#availabilityTable th,
+#availabilityTable td {
+    border: 1px solid #ccc;
+    text-align: center;
+    padding: 6px;
+    font-size: 0.85rem;
+}
+
+#availabilityTable th {
+    background-color: #f3f4f6;
+}
+
+.time-label {
+    background-color: #e5e7eb;
+    font-weight: 600;
+}
+
+.avail-cell {
+    cursor: pointer;
+    background-color: #fff;
+    transition: background-color 0.2s;
+}
+
+.avail-cell.available {
+    background-color: #bbf7d0; /* light green */
+}
+
+.avail-cell.unavailable {
+    background-color: #fca5a5; /* light red */
+}
+
+.availability-controls {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+}

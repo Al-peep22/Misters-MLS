@@ -1,0 +1,46 @@
+{
+  "GSS": [
+    {
+      "id": 0,
+      "profile_image": "./images/example.png",
+      "name": "Example Name",
+      "job_position": "GSS",
+      "availability": {
+        "sun": {
+          "block_1": { "start_time": "06:00", "end_time": "22:00" },
+          "block_2": { "start_time": null, "end_time": null }
+        },
+        "mon": {
+          "block_1": { "start_time": null, "end_time": null },
+          "block_2": { "start_time": null, "end_time": null }
+        },
+        "tue": {
+          "block_1": { "start_time": "06:00", "end_time": "12:00" },
+          "block_2": { "start_time": "18:00", "end_time": "22:00" }
+        },
+        "wed": {
+          "block_1": { "start_time": "06:00", "end_time": "22:00" },
+          "block_2": { "start_time": null, "end_time": null }
+        },
+        "thu": {
+          "block_1": { "start_time": "06:00", "end_time": "22:00" },
+          "block_2": { "start_time": null, "end_time": null }
+        },
+        "fri": {
+          "block_1": { "start_time": "06:00", "end_time": "22:00" },
+          "block_2": { "start_time": null, "end_time": null }
+        },
+        "sat": {
+          "block_1": { "start_time": "06:00", "end_time": "22:00" },
+          "block_2": { "start_time": null, "end_time": null }
+        }
+      },
+      "timeOff": [
+        { "start_date": "2026-05-14", "end_date": "2026-05-14" },
+        { "start_date": "2026-05-20", "end_date": "2026-05-22" }
+      ]
+    }
+  ],
+  "GSS_key_holder": [],
+  "Manager": []
+}

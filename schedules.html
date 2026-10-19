@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Misters Limitless Schedules</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="./css/web.css">
+
+    <!-- JS -->
+    <script defer src="./js/schedules.js"></script>
+</head>
+
+<body class="schedule-body">
+
+    <!-- Top Navigation Bar -->
+    <header class="schedule-header">
+        <div class="schedule-header-left">
+            <h1>Misters Limitless Schedules</h1>
+
+            <!-- Week Selector -->
+            <div class="week-selector">
+                <label for="weekSelect">Week:</label>
+                <select id="weekSelect"></select>
+            </div>
+
+            <!-- Lock Toggle -->
+            <div class="lock-toggle">
+                <label for="lockCheckbox">Locked:</label>
+                <input type="checkbox" id="lockCheckbox">
+            </div>
+        </div>
+
+        <div class="schedule-header-right">
+            <button id="autoScheduleBtn">Auto Schedule</button>
+            <button id="importScheduleBtn">Import</button>
+            <input type="file" id="importFileInput" accept=".json" hidden>
+            <button id="exportScheduleBtn">Export</button>
+            <button id="addEmployeeBtn" onclick="window.location.href='addEmployee.html'">Add Employee</button>
+            <button id="tutorialBtn" onclick="window.location.href='tutorial.html'">Tutorial</button>
+            <button id="logoutBtn">Logout</button>
+        </div>
+    </header>
+
+    <!-- Main Layout -->
+    <main class="schedule-main">
+
+        <!-- Left Sidebar: Employees -->
+        <aside class="employee-sidebar">
+            <h2>Employees</h2>
+
+            <div id="employeeList" class="employee-list">
+                <!-- JS will populate employees with remove buttons -->
+            </div>
+
+            <h2>Conflicts</h2>
+            <div id="conflictPanel" class="conflict-panel">
+                <!-- JS will show conflicts here -->
+            </div>
+        </aside>
+
+        <!-- Main Schedule Grid -->
+        <section class="schedule-grid-container">
+
+            <!-- Day Tabs -->
+            <div class="day-tabs">
+                <button class="day-tab" data-day="sun">Sunday</button>
+                <button class="day-tab" data-day="mon">Monday</button>
+                <button class="day-tab" data-day="tue">Tuesday</button>
+                <button class="day-tab" data-day="wed">Wednesday</button>
+                <button class="day-tab" data-day="thu">Thursday</button>
+                <button class="day-tab" data-day="fri">Friday</button>
+                <button class="day-tab" data-day="sat">Saturday</button>
+            </div>
+
+            <!-- Timeline Grid -->
+            <div id="scheduleGrid" class="schedule-grid">
+                <!-- JS will generate the timeline and shifts here -->
+            </div>
+
+        </section>
+
+        <!-- Right Sidebar: Shift Assignment -->
+        <aside class="assignment-sidebar">
+            <h2>Assign Shift</h2>
+
+            <p id="selectedShiftLabel">No shift selected</p>
+
+            <div id="availableEmployees" class="available-employees">
+                <!-- JS will populate available employees for selected shift -->
+            </div>
+
+            <button id="assignShiftBtn" disabled>Assign Selected Employee</button>
+            <button id="removeShiftBtn" disabled>Remove Shift</button>
+        </aside>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 10-16-2026 | Misters Limitless Schedules | By Alison Waldsmith</p>
+    </footer>
+
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Create Employee - Misters Limitless Schedules</title>
+    <link rel="stylesheet" href="./css/web.css">
+    <script defer src="./js/addEmployee.js"></script>
+</head>
+<body>
+    <main class="employee-form-container">
+        <h1>Create Employee</h1>
+
+        <form id="employeeForm">
+            <!-- Picture -->
+            <label for="profileImage">Profile Picture (URL or path)</label>
+            <input id="profileImage" name="profileImage" type="text" placeholder="./images/employee.png">
+
+            <!-- Name -->
+            <label for="employeeName">Name</label>
+            <input id="employeeName" name="employeeName" type="text" required>
+
+            <!-- Job Position -->
+            <p>Job Position:</p>
+            <div class="job-position-buttons">
+                <button type="button" data-position="GSS">GSS</button>
+                <button type="button" data-position="GSS_key_holder">GSS-Key Holder</button>
+                <button type="button" data-position="Manager">Manager</button>
+            </div>
+            <input id="jobPosition" name="jobPosition" type="hidden" required>
+
+            <!-- Availability -->
+            <p class="employeeFormAvailabilityTxt">Fully Available</p>
+            <button type="button" id="adjustAvailabilityBtn">Show Availability</button>
+
+            <section id="availabilitySection" class="availability-grid" hidden>
+                <h3>Weekly Availability</h3>
+
+                <table id="availabilityTable">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th data-day="sun">Sun</th>
+                            <th data-day="mon">Mon</th>
+                            <th data-day="tue">Tue</th>
+                            <th data-day="wed">Wed</th>
+                            <th data-day="thu">Thu</th>
+                            <th data-day="fri">Fri</th>
+                            <th data-day="sat">Sat</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="availabilityBody">
+                        <!-- JS will generate rows -->
+                    </tbody>
+                </table>
+            </section>
+
+
+            <!-- Time Off -->
+            <p>Time Off</p>
+            <p class="employeeFormTimeOff">n/a</p>
+            <button type="button" id="addTimeOffBtn">Add Time Off</button>
+
+            <section id="timeOffForm" class="timeOffForm" hidden>
+                <p>Days Unavailable</p>
+                <div>
+                    <label for="timeOffStart">Start Date</label>
+                    <input id="timeOffStart" class="employeeFormTimeOffStartDate" type="date">
+                    <label for="timeOffEnd">End Date</label>
+                    <input id="timeOffEnd" class="employeeFormTimeOffEndDate" type="date">
+                </div>
+                <div>
+                    <button type="button" id="cancelTimeOffBtn">Cancel</button>
+                    <button type="button" id="submitTimeOffBtn">Submit</button>
+                </div>
+            </section>
+
+            <button type="submit">Create Employee</button>
+        </form>
+    </main>
+
+    <footer>
+        <p>&copy; 10-16-2026 | Misters Limitless Schedules | By Alison Waldsmith</p>
+    </footer>
+</body>
+</html>

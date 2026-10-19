@@ -1,0 +1,20 @@
+{
+    "example_week":{
+        "date": "2026-05-14",
+        "locked": false,
+        "days": {
+            "sun": {
+                "shift_1":{"shift": "_id","employee":"_id"}, 
+                "shift_2":{"shift": "_id","employee":"_id"}, 
+                "shift_3":{"shift": "_id","employee":"_id"}, 
+                "shift_4":{"shift": "_id","employee":"_id"}
+            },
+            "mon": {},
+            "tue": {},
+            "wed": {},
+            "thu": {},
+            "fri": {},
+            "sat": {}
+        }
+    }
+}

@@ -1,0 +1,27 @@
+{
+  "shift_001": {
+    "type": "open",
+    "start_time": "06:00",
+    "end_time": "14:00"
+  },
+  "shift_002": {
+    "type": "open",
+    "start_time": "06:00",
+    "end_time": "15:00"
+  },
+  "shift_003": {
+    "type": "close",
+    "start_time": "15:00",
+    "end_time": "22:00"
+  },
+  "shift_004": {
+    "type": "close",
+    "start_time": "13:00",
+    "end_time": "22:00"
+  },
+  "shift_005": {
+    "type": "close",
+    "start_time": "12:00",
+    "end_time": "20:00"
+  }
+}
