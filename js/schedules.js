@@ -14,9 +14,47 @@ let employees = {};
 let defaultShifts = {};
 
 let currentWeekId = null;
-let currentDay = "sun";
 let selectedShift = null;
+let selectedEmployeeId = null;
 let scheduleLocked = false;
+let employeePendingDeletion = null;
+let activeDetailsEmployee = null;
+let activeDetailsGroupKey = null;
+let timeOffDraft = [];
+let editingTimeOffIndex = null;
+let pendingProfileImage = "";
+let profileImageRead = Promise.resolve();
+const schedulePreferencesKey = "schedulePreferences";
+const scheduleDays = [
+    { key: "sun", label: "Sunday" },
+    { key: "mon", label: "Monday" },
+    { key: "tue", label: "Tuesday" },
+    { key: "wed", label: "Wednesday" },
+    { key: "thu", label: "Thursday" },
+    { key: "fri", label: "Friday" },
+    { key: "sat", label: "Saturday" }
+];
+const scheduleTimes = Array.from({ length: 16 }, (_, index) =>
+    `${String(index + 6).padStart(2, "0")}:00`
+);
+const employeeColors = [
+    { value: "#52B8DA", label: "Sky Blue" }, { value: "#1212DE", label: "Electric Blue" },
+    { value: "#12DE12", label: "Bright Green" }, { value: "#DE6712", label: "Orange" },
+    { value: "#C878E2", label: "Light Purple" }, { value: "#E2E278", label: "Pale Yellow" },
+    { value: "#3EEFB4", label: "Mint" }, { value: "#1F5093", label: "Navy" },
+    { value: "#46931F", label: "Olive Green" }, { value: "#1256DE", label: "Royal Blue" },
+    { value: "#93761F", label: "Dark Mustard" }, { value: "#ABDE12", label: "Lime" },
+    { value: "#1F9376", label: "Teal" }, { value: "#C33EEF", label: "Violet" },
+    { value: "#6D1F93", label: "Plum" }, { value: "#DEAB12", label: "Gold" },
+    { value: "#68A2F3", label: "Periwinkle" }, { value: "#F3A268", label: "Light Orange" },
+    { value: "#3EEFEF", label: "Turquoise" }, { value: "#3EEF79", label: "Spring Green" },
+    { value: "#98A50D", label: "Dark Lime" }, { value: "#9CE278", label: "Light Green" },
+    { value: "#270DA5", label: "Indigo" }, { value: "#93501F", label: "Brown" },
+    { value: "#7878E2", label: "Light Indigo" }, { value: "#1F3393", label: "Deep Blue" },
+    { value: "#1F6D93", label: "Steel Blue" }, { value: "#EFE13E", label: "Yellow" },
+    { value: "#5EC62A", label: "Leaf Green" }, { value: "#0DA559", label: "Emerald" },
+    { value: "#9668F3", label: "Purple" }, { value: "#1F8A93", label: "Deep Teal" }
+];
 
 
 // ===============================
@@ -33,18 +71,36 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // Load JSON files
-    scheduleWeeks = await loadJSON("./json/scheduleWeeks.json");
-    employees = JSON.parse(localStorage.getItem("employees") || "{}");
+    scheduleWeeks = JSON.parse(localStorage.getItem("scheduleWeeks") || "null")
+        || await loadJSON("./json/scheduleWeeks.json");
+    const savedEmployees = localStorage.getItem("employees");
+    employees = savedEmployees === null
+        ? await loadJSON("./json/employees.json")
+        : JSON.parse(savedEmployees);
+    if (savedEmployees === null) {
+        localStorage.setItem("employees", JSON.stringify(employees));
+    }
+    if (!ensureUniqueEmployeeColors()) {
+        showScheduleError("There are more employees than unique schedule colors. Add more colors to the palette before assigning colors.");
+    }
+    window.dispatchEvent(new CustomEvent("employee-colors-changed"));
     defaultShifts = await loadJSON("./json/defaultShifts.json");
 
     // Populate UI
-    populateWeekSelector();
+    const availableWeekIds = populateWeekSelector();
     populateEmployeeSidebar();
-    setupDayTabs();
-    setupButtons();
-
-    // Load first week
-    const firstWeek = Object.keys(scheduleWeeks)[0];
+    const savedWeekId = getSchedulePreferences().weekId;
+    const preferredWeekId = availableWeekIds.includes(savedWeekId)
+        ? savedWeekId
+        : availableWeekIds[availableWeekIds.length - 1];
+    const firstWeek = preferredWeekId;
+    if (!firstWeek) {
+        document.getElementById("weekSelect").disabled = true;
+        showScheduleError("No schedule weeks are available for the previous or current week.");
+        return;
+    }
+    document.getElementById("weekSelect").disabled = false;
+    document.getElementById("weekSelect").value = firstWeek;
     loadWeek(firstWeek);
 });
 
@@ -57,16 +113,183 @@ function populateWeekSelector() {
     const weekSelect = document.getElementById("weekSelect");
     weekSelect.innerHTML = "";
 
-    Object.keys(scheduleWeeks).forEach(weekId => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentWeekStart = getWeekStartDate(today);
+    const previousWeekStart = new Date(currentWeekStart);
+    previousWeekStart.setDate(previousWeekStart.getDate() - 7);
+    ensureScheduleWeeks([previousWeekStart, currentWeekStart]);
+    const visibleWeeks = Object.entries(scheduleWeeks)
+        .map(([weekId, week]) => ({
+            weekId,
+            week,
+            weekStart: getWeekStartDate(getWeekReferenceDate(weekId, week))
+        }))
+        .filter(entry => entry.weekStart
+            && entry.weekStart >= previousWeekStart
+            && entry.weekStart <= currentWeekStart)
+        .sort((first, second) => first.weekStart - second.weekStart);
+
+    visibleWeeks.forEach(({ weekId, weekStart }) => {
         const opt = document.createElement("option");
         opt.value = weekId;
-        opt.textContent = `${weekId} (${scheduleWeeks[weekId].date})`;
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        opt.textContent = `${formatMonthDay(weekStart)} - ${formatMonthDay(weekEnd)}`;
         weekSelect.appendChild(opt);
     });
+    weekSelect.value = visibleWeeks[visibleWeeks.length - 1]?.weekId || "";
 
-    weekSelect.addEventListener("change", () => {
+    weekSelect.onchange = () => {
         loadWeek(weekSelect.value);
+    };
+    return visibleWeeks.map(week => week.weekId);
+}
+
+function ensureScheduleWeeks(weekStarts) {
+    let changed = false;
+    weekStarts.forEach(weekStart => {
+        const weekAlreadyExists = Object.entries(scheduleWeeks).some(([weekId, week]) => {
+            const referenceDate = getWeekReferenceDate(weekId, week);
+            const existingWeekStart = getWeekStartDate(referenceDate);
+            return existingWeekStart && existingWeekStart.getTime() === weekStart.getTime();
+        });
+        if (weekAlreadyExists) return;
+
+        const weekDate = dateToScheduleKey(weekStart);
+        let weekId = weekDate;
+        let suffix = 2;
+        while (Object.prototype.hasOwnProperty.call(scheduleWeeks, weekId)) {
+            weekId = `${weekDate}_${suffix++}`;
+        }
+        scheduleWeeks[weekId] = {
+            date: weekDate,
+            locked: false,
+            days: Object.fromEntries(scheduleDays.map(day => [day.key, {}]))
+        };
+        changed = true;
     });
+    if (changed) persistSchedule();
+}
+
+function getWeekReferenceDate(weekId, week) {
+    return parseScheduleDate(week && week.date) || parseScheduleDate(weekId);
+}
+
+function parseScheduleDate(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        return null;
+    }
+    date.setHours(0, 0, 0, 0);
+    return date;
+}
+
+function parseImportedDate(value) {
+    const text = String(value || "").trim();
+    const isoDate = parseScheduleDate(text);
+    if (isoDate) return dateToScheduleKey(isoDate);
+    const localizedDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!localizedDate) return null;
+    const [, month, day, year] = localizedDate.map(Number);
+    const parsedDate = new Date(year, month - 1, day);
+    if (parsedDate.getFullYear() !== year
+        || parsedDate.getMonth() !== month - 1
+        || parsedDate.getDate() !== day) {
+        return null;
+    }
+    return dateToScheduleKey(parsedDate);
+}
+
+function getWeekStartDate(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    const weekStart = new Date(date);
+    weekStart.setHours(0, 0, 0, 0);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    return weekStart;
+}
+
+function getScheduleDateForDay(weekId, day) {
+    const week = scheduleWeeks[weekId];
+    const date = getWeekStartDate(week && getWeekReferenceDate(weekId, week));
+    const dayOffset = scheduleDays.findIndex(scheduleDay => scheduleDay.key === day);
+    if (!date || dayOffset < 0) return null;
+    date.setDate(date.getDate() + dayOffset);
+    return dateToScheduleKey(date);
+}
+
+function dateToScheduleKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+function getSchedulePreferences() {
+    try {
+        const preferences = JSON.parse(localStorage.getItem(schedulePreferencesKey) || "{}");
+        return preferences && typeof preferences === "object" ? preferences : {};
+    } catch (error) {
+        console.error("Could not read saved schedule preferences.", error);
+        return {};
+    }
+}
+
+function saveSchedulePreferences(changes) {
+    try {
+        localStorage.setItem(schedulePreferencesKey, JSON.stringify({
+            ...getSchedulePreferences(),
+            ...changes
+        }));
+    } catch (error) {
+        showScheduleError("Could not save your local schedule preferences.");
+        console.error("Could not save schedule preferences.", error);
+    }
+}
+
+function formatMonthDay(date) {
+    return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function getOrdinalDay(day) {
+    const lastTwoDigits = day % 100;
+    if (lastTwoDigits >= 11 && lastTwoDigits <= 13) return `${day}th`;
+    switch (day % 10) {
+        case 1: return `${day}st`;
+        case 2: return `${day}nd`;
+        case 3: return `${day}rd`;
+        default: return `${day}th`;
+    }
+}
+
+function getScheduleWeekStart(weekId) {
+    const week = scheduleWeeks[weekId];
+    return getWeekStartDate(week && getWeekReferenceDate(weekId, week));
+}
+
+function updateScheduleMonthHeader() {
+    const weekStart = getScheduleWeekStart(currentWeekId);
+    if (!weekStart) return;
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const monthFormatter = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" });
+    const startMonth = monthFormatter.format(weekStart);
+    const endMonth = monthFormatter.format(weekEnd);
+    const left = document.getElementById("scheduleMonthLeft");
+    const single = document.getElementById("scheduleMonthSingle");
+    const right = document.getElementById("scheduleMonthRight");
+    if (weekStart.getMonth() === weekEnd.getMonth()
+        && weekStart.getFullYear() === weekEnd.getFullYear()) {
+        left.textContent = "";
+        single.textContent = startMonth;
+        right.textContent = "";
+    } else {
+        left.textContent = startMonth;
+        single.textContent = "";
+        right.textContent = endMonth;
+    }
 }
 
 
@@ -77,36 +300,20 @@ function populateWeekSelector() {
 function loadWeek(weekId) {
     currentWeekId = weekId;
     selectedShift = null;
+    saveSchedulePreferences({ weekId });
 
     const weekData = scheduleWeeks[weekId];
-    scheduleLocked = weekData.locked;
+    if (!weekData || !weekData.days) {
+        throw new Error(`Schedule week "${weekId}" has no day data.`);
+    }
+    scheduleLocked = Boolean(weekData.locked);
 
     document.getElementById("lockCheckbox").checked = scheduleLocked;
 
+    setupScheduleResizeHandle();
+    updateScheduleMonthHeader();
     renderScheduleGrid();
-    renderDay(currentDay);
-}
-
-
-// ===============================
-// DAY TABS
-// ===============================
-
-function setupDayTabs() {
-    const tabs = document.querySelectorAll(".day-tab");
-
-    tabs.forEach(tab => {
-        tab.addEventListener("click", () => {
-            tabs.forEach(t => t.classList.remove("active"));
-            tab.classList.add("active");
-
-            currentDay = tab.dataset.day;
-            renderDay(currentDay);
-        });
-    });
-
-    // Default active
-    document.querySelector(".day-tab[data-day='sun']").classList.add("active");
+    updateScheduleControls();
 }
 
 
@@ -117,162 +324,789 @@ function setupDayTabs() {
 function renderScheduleGrid() {
     const grid = document.getElementById("scheduleGrid");
     grid.innerHTML = "";
-
-    // Timeline hours 6am–10pm
-    const hours = [
-        "06:00","07:00","08:00","09:00","10:00","11:00",
-        "12:00","13:00","14:00","15:00","16:00","17:00",
-        "18:00","19:00","20:00","21:00","22:00"
-    ];
-
-    const timeline = document.createElement("div");
-    timeline.classList.add("timeline");
-
-    hours.forEach(h => {
-        const block = document.createElement("div");
-        block.classList.add("timeline-hour");
-        block.textContent = h;
-        timeline.appendChild(block);
+    const table = document.createElement("table");
+    table.classList.add("schedule-table");
+    table.setAttribute("aria-label", "Weekly employee schedule");
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    const timeHeader = document.createElement("th");
+    timeHeader.scope = "col";
+    timeHeader.textContent = "Time";
+    headerRow.appendChild(timeHeader);
+    const availabilityEmployeeId = selectedEmployeeId;
+    scheduleDays.forEach(day => {
+        const header = document.createElement("th");
+        header.scope = "col";
+        const scheduleDate = parseScheduleDate(getScheduleDateForDay(currentWeekId, day.key));
+        header.textContent = scheduleDate
+            ? `${day.label} ${getOrdinalDay(scheduleDate.getDate())}`
+            : day.label;
+        if (availabilityEmployeeId !== null && availabilityEmployeeId !== undefined
+            && scheduleTimes.every(time =>
+                !isEmployeeAvailableAt(availabilityEmployeeId, day.key, time).available
+            )) {
+            header.classList.add("day-unavailable");
+            header.setAttribute("aria-label", `${header.textContent}: unavailable all day`);
+        }
+        headerRow.appendChild(header);
     });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
 
-    grid.appendChild(timeline);
-}
+    const tbody = document.createElement("tbody");
+    const shiftsByDay = Object.fromEntries(scheduleDays.map(day => [day.key, getDayShifts(day.key)]));
 
+    scheduleTimes.forEach((time, rowIndex) => {
+        const row = document.createElement("tr");
+        const timeCell = document.createElement("th");
+        timeCell.scope = "row";
+        timeCell.textContent = formatScheduleTime(time);
+        row.appendChild(timeCell);
 
-// ===============================
-// RENDER DAY SHIFTS
-// ===============================
+        scheduleDays.forEach(day => {
+            const cell = document.createElement("td");
+            const availability = availabilityEmployeeId === null
+                ? { available: true }
+                : isEmployeeAvailableAt(availabilityEmployeeId, day.key, time);
+            const occupyingShifts = shiftsByDay[day.key].filter(shift =>
+                rowIndex >= shift.startIndex && rowIndex < shift.endIndex
+            );
+            cell.classList.add("schedule-slot", availability.available ? "available" : "unavailable");
+            cell.setAttribute("aria-label", `${day.label} ${formatScheduleTime(time)}: ${availability.available ? "available" : "unavailable"}`);
+            const orderedShifts = occupyingShifts.slice().sort((first, second) => {
+                if (selectedShift && selectedShift.day === day.key) {
+                    const firstSelected = first.key === selectedShift.shiftKey;
+                    const secondSelected = second.key === selectedShift.shiftKey;
+                    if (firstSelected !== secondSelected) return Number(secondSelected) - Number(firstSelected);
+                }
+                if (selectedEmployeeId === null) return 0;
+                const firstMatches = String(first.info.employee) === String(selectedEmployeeId);
+                const secondMatches = String(second.info.employee) === String(selectedEmployeeId);
+                return Number(secondMatches) - Number(firstMatches);
+            });
+            const selectedInCell = orderedShifts.find(shift =>
+                selectedShift && selectedShift.day === day.key && selectedShift.shiftKey === shift.key
+            );
 
-function renderDay(day) {
-    const grid = document.getElementById("scheduleGrid");
+            if (occupyingShifts.length) {
+                const isSelected = Boolean(selectedInCell);
+                cell.classList.add("occupied");
+                if (occupyingShifts.length > 1) {
+                    cell.classList.add("overlapping", `overlap-depth-${Math.min(occupyingShifts.length, 4)}`);
+                }
+                if (isSelected) {
+                    cell.classList.add("shift-selected");
+                    if (selectedInCell.startIndex === rowIndex) cell.classList.add("shift-selected-start");
+                    if (selectedInCell.endIndex - 1 === rowIndex) cell.classList.add("shift-selected-end");
+                }
+                const colorLanes = document.createElement("div");
+                colorLanes.classList.add("shift-color-lanes");
+                const dayShiftByKey = new Map(occupyingShifts.map(shift => [shift.key, shift]));
+                const laneOrder = [];
+                Object.keys(scheduleWeeks[currentWeekId].days[day.key] || {}).forEach(shiftKey => {
+                    const shift = dayShiftByKey.get(shiftKey);
+                    if (!shift) return;
+                    laneOrder.splice(Math.floor((laneOrder.length + 1) / 2), 0, shift);
+                });
+                laneOrder.forEach(shift => {
+                    const lane = document.createElement("button");
+                    lane.type = "button";
+                    lane.classList.add("shift-color-lane");
+                    lane.style.backgroundColor = getEmployeeColor(shift.info.employee);
+                    const isShiftSelected = selectedShift
+                        && selectedShift.day === day.key
+                        && selectedShift.shiftKey === shift.key;
+                    lane.setAttribute("aria-label", `Select ${getEmployeeName(shift.info.employee)}'s shift`);
+                    lane.setAttribute("aria-pressed", String(Boolean(isShiftSelected)));
+                    lane.title = `${getEmployeeName(shift.info.employee)}'s shift`;
+                    lane.addEventListener("click", event => {
+                        event.stopPropagation();
+                        if (selectedEmployeeId !== null
+                            && String(selectedEmployeeId) !== String(getShiftEmployeeId(shift.info))) {
+                            createShift(day.key, time);
+                            return;
+                        }
+                        selectShift(day.key, shift.key);
+                    });
+                    colorLanes.appendChild(lane);
+                });
+                cell.appendChild(colorLanes);
+                const segment = document.createElement("div");
+                segment.classList.add("shift-segment");
+                if (isSelected) segment.classList.add("selected");
+                if (isSelected && !scheduleLocked && selectedInCell.startIndex === rowIndex) {
+                    segment.classList.add("has-top-controls");
+                    segment.appendChild(createShiftControls([
+                        ["↑", "Extend shift up one hour", "extend-up"],
+                        ["↓", "Shrink shift from the top by one hour", "shrink-top"],
+                        ["⇈", "Extend shift to the top of the day", "extend-to-top"]
+                    ]));
+                }
 
-    // Remove old shift blocks
-    const oldBlocks = document.querySelectorAll(".shift-block");
-    oldBlocks.forEach(b => b.remove());
+                orderedShifts.filter(shift => shift.startIndex === rowIndex).forEach(shift => {
+                    const shiftLabel = document.createElement("button");
+                    shiftLabel.type = "button";
+                    shiftLabel.classList.add("shift-segment-label");
+                    shiftLabel.textContent = `${getEmployeeName(shift.info.employee)} ${formatScheduleTime(indexToTime(shift.startIndex))}-${formatScheduleTime(indexToTime(shift.endIndex))}`;
+                    const shiftColor = getEmployeeColor(shift.info.employee);
+                    shiftLabel.style.backgroundColor = shiftColor;
+                    shiftLabel.style.color = getContrastingTextColor(shiftColor);
+                    const isShiftSelected = selectedShift
+                        && selectedShift.day === day.key
+                        && selectedShift.shiftKey === shift.key;
+                    shiftLabel.setAttribute("aria-pressed", String(Boolean(isShiftSelected)));
+                    shiftLabel.addEventListener("click", event => {
+                        event.stopPropagation();
+                        if (selectedEmployeeId !== null
+                            && String(selectedEmployeeId) !== String(getShiftEmployeeId(shift.info))) {
+                            createShift(day.key, shift.startTime);
+                            return;
+                        }
+                        selectShift(day.key, shift.key);
+                    });
+                    segment.appendChild(shiftLabel);
+                });
 
-    const weekData = scheduleWeeks[currentWeekId];
-    const dayData = weekData.days[day];
+                if (isSelected && !scheduleLocked && selectedInCell.endIndex - 1 === rowIndex) {
+                    segment.classList.add("has-bottom-controls");
+                    segment.appendChild(createShiftControls([
+                        ["↓", "Extend shift down one hour", "extend-down"],
+                        ["↑", "Shrink shift from the bottom by one hour", "shrink-bottom"],
+                        ["⇊", "Extend shift to the bottom of the day", "extend-to-bottom"]
+                    ]));
+                }
+                cell.appendChild(segment);
+            }
 
-    Object.keys(dayData).forEach(shiftKey => {
-        const shiftInfo = dayData[shiftKey];
-        const shiftId = shiftInfo.shift;
-        const employeeId = shiftInfo.employee;
-
-        const shiftData = defaultShifts[shiftId];
-        if (!shiftData) return;
-
-        const block = document.createElement("div");
-        block.classList.add("shift-block");
-        block.dataset.shiftKey = shiftKey;
-        block.dataset.shiftId = shiftId;
-
-        block.innerHTML = `
-            <p>${shiftData.type.toUpperCase()}</p>
-            <p>${shiftData.start_time} - ${shiftData.end_time}</p>
-            <p class="assigned-employee">${getEmployeeName(employeeId)}</p>
-        `;
-
-        block.addEventListener("click", () => selectShift(shiftKey, shiftId));
-
-        grid.appendChild(block);
+            cell.addEventListener("click", () => {
+                if (occupyingShifts.length) {
+                    const selectedEmployeeHasShift = selectedEmployeeId !== null
+                        && occupyingShifts.some(shift =>
+                            String(shift.info.employee) === String(selectedEmployeeId)
+                        );
+                    if (selectedEmployeeId !== null && !selectedEmployeeHasShift) {
+                        createShift(day.key, time);
+                    }
+                } else if (selectedEmployeeId !== null) {
+                    createShift(day.key, time);
+                } else if (selectedShift) {
+                    selectedShift = null;
+                    clearScheduleError();
+                    renderScheduleGrid();
+                    updateScheduleControls();
+                } else {
+                    createShift(day.key, time);
+                }
+            });
+            row.appendChild(cell);
+        });
+        tbody.appendChild(row);
     });
+    const closingRow = document.createElement("tr");
+    closingRow.classList.add("schedule-closing-row");
+    const closingTime = document.createElement("th");
+    closingTime.scope = "row";
+    closingTime.textContent = formatScheduleTime(indexToTime(scheduleTimes.length));
+    closingRow.appendChild(closingTime);
+    scheduleDays.forEach(day => {
+        const closingCell = document.createElement("td");
+        closingCell.classList.add("schedule-closing-cell");
+        closingCell.setAttribute("aria-label", `${day.label}: store closes at 10pm`);
+        closingRow.appendChild(closingCell);
+    });
+    tbody.appendChild(closingRow);
+    table.appendChild(tbody);
+    grid.appendChild(table);
+    updateEmployeeWeeklyHours();
 }
 
-
-// ===============================
-// SELECT SHIFT
-// ===============================
-
-function selectShift(shiftKey, shiftId) {
-    selectedShift = { shiftKey, shiftId };
-
-    document.getElementById("selectedShiftLabel").textContent =
-        `Selected: ${shiftId}`;
-
-    populateAvailableEmployees();
-    updateAssignmentButtons();
+function createShiftControls(actions) {
+    const controls = document.createElement("div");
+    controls.classList.add("shift-edge-controls");
+    actions.forEach(([icon, label, action]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.classList.add("shift-edge-control");
+        button.textContent = icon;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        button.addEventListener("click", event => {
+            event.stopPropagation();
+            resizeSelectedShift(action);
+        });
+        controls.appendChild(button);
+    });
+    return controls;
 }
 
+function selectShift(day, shiftKey) {
+    const shiftInfo = scheduleWeeks[currentWeekId].days[day][shiftKey];
+    if (!shiftInfo) return;
+    if (selectedEmployeeId !== null
+        && String(selectedEmployeeId) !== String(getShiftEmployeeId(shiftInfo))) return;
+    const wasSelected = selectedShift
+        && selectedShift.day === day
+        && selectedShift.shiftKey === shiftKey;
+    selectedShift = wasSelected ? null : { day, shiftKey };
+    clearScheduleError();
+    renderScheduleGrid();
+    updateScheduleControls();
+}
 
-// ===============================
-// AVAILABLE EMPLOYEES
-// ===============================
+function getContrastingTextColor(backgroundColor) {
+    const channels = backgroundColor.match(/[0-9a-f]{2}/gi)?.map(channel => parseInt(channel, 16) / 255);
+    if (!channels || channels.length < 3) return "#111827";
+    const luminance = channels
+        .slice(0, 3)
+        .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+        .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+    return luminance > 0.179 ? "#111827" : "#ffffff";
+}
 
-function populateAvailableEmployees() {
-    const container = document.getElementById("availableEmployees");
-    container.innerHTML = "";
+function getDayShifts(day, weekId = currentWeekId) {
+    const dayData = scheduleWeeks[weekId].days[day] || {};
+    return Object.entries(dayData)
+        .map(([key, info]) => {
+            const shift = info && (info.start_time && info.end_time
+                ? info
+                : defaultShifts[info.shift]);
+            if (!shift) return null;
+            const start = timeToMinutes(shift.start_time);
+            const end = timeToMinutes(shift.end_time);
+            if (start === null || end === null || end <= start) return null;
+            return {
+                key,
+                info,
+                startTime: shift.start_time,
+                endTime: shift.end_time,
+                startIndex: Math.floor((start - 360) / 60),
+                endIndex: Math.ceil((end - 360) / 60)
+            };
+        })
+        .filter(shift => shift && shift.endIndex > 0 && shift.startIndex < scheduleTimes.length)
+        .sort((a, b) => a.startIndex - b.startIndex);
+}
 
-    const allEmployees = [
-        ...(employees.GSS || []),
-        ...(employees.GSS_key_holder || []),
-        ...(employees.Manager || [])
-    ];
+function validateWeekSchedule(weekId) {
+    const issues = [];
+    const week = scheduleWeeks[weekId];
+    if (!week || !week.days) {
+        return [`${weekId}: schedule data is missing.`];
+    }
 
-    allEmployees.forEach(emp => {
-        const div = document.createElement("div");
-        div.classList.add("available-employee");
-        div.dataset.empId = emp.id;
+    scheduleDays.forEach(day => {
+        const shifts = getDayShifts(day.key, weekId)
+            .map(shift => {
+                const employeeId = getShiftEmployeeId(shift.info);
+                const employee = getEmployeeById(employeeId);
+                return employee ? { ...shift, employee, position: getEmployeePosition(employee) } : null;
+            })
+            .filter(Boolean);
+        const scheduleDate = getScheduleDateForDay(weekId, day.key);
+        shifts.forEach(shift => {
+            if (isEmployeeOnTimeOff(shift.employee, scheduleDate)) {
+                issues.push(`${day.label}: ${shift.employee.name || "An employee"} is scheduled during time off (${formatEmployeeDate(scheduleDate)}).`);
+            }
+            const unavailableIndexes = [];
+            for (let index = Math.max(0, shift.startIndex);
+                index < Math.min(scheduleTimes.length, shift.endIndex);
+                index++) {
+                if (!isEmployeeAvailableAt(shift.employee.id, day.key, scheduleTimes[index], false, weekId).available) {
+                    unavailableIndexes.push(index);
+                }
+            }
+            if (unavailableIndexes.length) {
+                issues.push(`Availability conflict — ${formatAvailabilityConflict({
+                    weekId,
+                    day: day.key,
+                    employeeId: shift.employee.id,
+                    unavailableIndexes
+                })}.`);
+            }
+        });
+        const openingEmployees = shifts.filter(shift => {
+            const start = timeToMinutes(shift.startTime);
+            return start !== null && start >= 360 && start <= 420;
+        });
+        const closingEmployees = shifts.filter(shift => {
+            const end = timeToMinutes(shift.endTime);
+            return end !== null && end >= 1260 && end <= 1320;
+        });
+        const openingCount = new Set(openingEmployees.map(shift => String(shift.employee.id))).size;
+        const closingCount = new Set(closingEmployees.map(shift => String(shift.employee.id))).size;
 
-        div.textContent = emp.name;
+        if (openingCount < 2) {
+            issues.push(`${day.label}: needs 2 openers starting between 6am and 7am (currently ${openingCount}).`);
+        }
+        if (closingCount < 3) {
+            issues.push(`${day.label}: needs 3 closers ending between 9pm and 10pm (currently ${closingCount}).`);
+        }
 
-        div.addEventListener("click", () => {
-            document.querySelectorAll(".available-employee")
-                .forEach(e => e.classList.remove("selected"));
-
-            div.classList.add("selected");
+        const managerlessKeyHolderHours = [];
+        const managerlessUncoveredHours = [];
+        const understaffedHours = [];
+        scheduleTimes.forEach((time, index) => {
+            const working = shifts.filter(shift => index >= shift.startIndex && index < shift.endIndex);
+            if (new Set(working.map(shift => String(shift.employee.id))).size < 2) {
+                understaffedHours.push(time);
+            }
+            const hasManager = working.some(shift => shift.position === "Manager");
+            if (!hasManager) {
+                if (working.some(shift => shift.position === "GSS_key_holder")) {
+                    managerlessKeyHolderHours.push(time);
+                } else {
+                    managerlessUncoveredHours.push(time);
+                }
+            }
         });
 
-        container.appendChild(div);
+        if (understaffedHours.length) {
+            issues.push(`${day.label}: at least 2 employees are required at ${formatScheduleTimeList(understaffedHours)}.`);
+        }
+        if (managerlessUncoveredHours.length) {
+            issues.push(`${day.label}: a manager or working key holder is required at ${formatScheduleTimeList(managerlessUncoveredHours)}.`);
+        }
+        if (managerlessKeyHolderHours.length > 3) {
+            issues.push(`${day.label}: key holders cover ${managerlessKeyHolderHours.length} managerless hours; the limit is 3 (${formatScheduleTimeList(managerlessKeyHolderHours)}).`);
+        }
+    });
+
+    return issues;
+}
+
+function getEmployeePosition(employee) {
+    if (employee.job_position) return employee.job_position;
+    if ((employees.Manager || []).includes(employee)) return "Manager";
+    if ((employees.GSS_key_holder || []).includes(employee)) return "GSS_key_holder";
+    if ((employees.GSS || []).includes(employee)) return "GSS";
+    return "";
+}
+
+function formatScheduleTimeList(times) {
+    return times.map(formatScheduleTime).join(", ");
+}
+
+function indexToTime(index) {
+    return `${String(Math.min(index + 6, 22)).padStart(2, "0")}:00`;
+}
+
+function formatScheduleTime(time) {
+    const minutes = timeToMinutes(time);
+    if (minutes === null) return time;
+    const hour = Math.floor(minutes / 60);
+    const period = hour < 12 ? "am" : "pm";
+    return `${hour % 12 || 12}${period}`;
+}
+
+function createShift(day, startTime) {
+    clearScheduleError();
+    if (scheduleLocked) {
+        showScheduleError("This schedule is locked. Unlock it before making changes.");
+        return;
+    }
+    const employee = getEmployeeById(selectedEmployeeId);
+    if (!employee) {
+        showScheduleError("Select an employee by clicking their name before choosing a time.");
+        return;
+    }
+
+    const startIndex = scheduleTimes.indexOf(startTime);
+    if (startIndex < 0) return;
+    if (getDayShifts(day).some(shift => String(shift.info.employee) === String(selectedEmployeeId))) {
+        showScheduleError(`${employee.name} already has a shift on ${getDayLabel(day)}.`);
+        return;
+    }
+    if (!isEmployeeAvailableAt(selectedEmployeeId, day, startTime).available) {
+        showScheduleError(`${employee.name} is unavailable on ${getDayLabel(day)} at ${formatScheduleTime(startTime)}.`);
+        return;
+    }
+
+    let endIndex = startIndex;
+    const maxEndIndex = Math.min(startIndex + 8, scheduleTimes.length);
+    while (endIndex < maxEndIndex
+        && isEmployeeAvailableAt(selectedEmployeeId, day, scheduleTimes[endIndex]).available) {
+        endIndex++;
+    }
+    if (endIndex - startIndex < 3) {
+        showScheduleError(`Cannot create a shift for ${employee.name}: fewer than 3 consecutive available hours remain at ${formatScheduleTime(startTime)}.`);
+        return;
+    }
+
+    let shiftKey = `shift_${Date.now()}`;
+    while (Object.prototype.hasOwnProperty.call(scheduleWeeks[currentWeekId].days[day], shiftKey)) {
+        shiftKey = `shift_${Number(shiftKey.slice(6)) + 1}`;
+    }
+    scheduleWeeks[currentWeekId].days[day][shiftKey] = {
+        start_time: startTime,
+        end_time: indexToTime(endIndex),
+        employee: selectedEmployeeId
+    };
+    selectedShift = { day, shiftKey };
+    selectedEmployeeId = employee.id;
+    populateEmployeeSidebar();
+    persistSchedule();
+    renderScheduleGrid();
+    updateScheduleControls();
+}
+
+function removeSelectedShift() {
+    if (!selectedShift || scheduleLocked) return;
+    delete scheduleWeeks[currentWeekId].days[selectedShift.day][selectedShift.shiftKey];
+    selectedShift = null;
+    persistSchedule();
+    renderScheduleGrid();
+    updateScheduleControls();
+}
+
+function resizeSelectedShift(mode) {
+    if (!selectedShift || scheduleLocked) return;
+    const shiftInfo = scheduleWeeks[currentWeekId].days[selectedShift.day][selectedShift.shiftKey];
+    const shift = shiftInfo && (shiftInfo.start_time && shiftInfo.end_time
+        ? shiftInfo
+        : defaultShifts[shiftInfo.shift]);
+    if (!shift) return;
+
+    const start = timeToMinutes(shift.start_time);
+    const end = timeToMinutes(shift.end_time);
+    if (start === null || end === null) return;
+    const startIndex = Math.floor((start - 360) / 60);
+    const endIndex = Math.ceil((end - 360) / 60);
+
+    let newStartIndex = startIndex;
+    let newEndIndex = endIndex;
+    const duration = endIndex - startIndex;
+
+    if (mode === "extend-up" || mode === "extend-to-top") {
+        const target = mode === "extend-up" ? startIndex - 1 : 0;
+        while (newStartIndex > target) {
+            const candidateTime = scheduleTimes[newStartIndex - 1];
+            if (!candidateTime) break;
+            if (!isEmployeeAvailableAt(shiftInfo.employee, selectedShift.day, candidateTime).available) {
+                if (mode === "extend-up") {
+                    showScheduleError(`Cannot extend up: ${getEmployeeName(shiftInfo.employee)} is unavailable at ${formatScheduleTime(candidateTime)}.`);
+                    return;
+                }
+                break;
+            }
+            newStartIndex--;
+        }
+    } else if (mode === "extend-down" || mode === "extend-to-bottom") {
+        const target = mode === "extend-down" ? endIndex + 1 : scheduleTimes.length;
+        while (newEndIndex < target) {
+            const candidateTime = scheduleTimes[newEndIndex];
+            if (!candidateTime) break;
+            if (!isEmployeeAvailableAt(shiftInfo.employee, selectedShift.day, candidateTime).available) {
+                if (mode === "extend-down") {
+                    showScheduleError(`Cannot extend down: ${getEmployeeName(shiftInfo.employee)} is unavailable at ${formatScheduleTime(candidateTime)}.`);
+                    return;
+                }
+                break;
+            }
+            newEndIndex++;
+        }
+    } else if (mode === "shrink-top") {
+        if (duration <= 3) return;
+        newStartIndex++;
+    } else if (mode === "shrink-bottom") {
+        if (duration <= 3) return;
+        newEndIndex--;
+    }
+
+    if (newStartIndex === startIndex && newEndIndex === endIndex) return;
+    shiftInfo.start_time = indexToTime(newStartIndex);
+    shiftInfo.end_time = indexToTime(newEndIndex);
+
+    persistSchedule();
+    clearScheduleError();
+    renderScheduleGrid();
+    updateScheduleControls();
+}
+
+function updateScheduleControls() {
+    const employee = getEmployeeById(selectedEmployeeId);
+    document.getElementById("selectedEmployeeLabel").textContent = employee
+        ? `Selected: ${employee.name || "Unnamed employee"}`
+        : "Select an employee by clicking their name.";
+    document.getElementById("removeShiftBtn").disabled = !selectedShift || scheduleLocked;
+}
+
+function setupScheduleResizeHandle() {
+    const handle = document.getElementById("scheduleResizeHandle");
+    const main = document.querySelector(".schedule-main");
+    if (handle.dataset.resizeReady) return;
+    handle.dataset.resizeReady = "true";
+
+    const resizeTo = clientX => {
+        const bounds = main.getBoundingClientRect();
+        const minScheduleWidth = 820;
+        const minSidebarWidth = 280;
+        const handleWidth = handle.getBoundingClientRect().width;
+        const availableWidth = bounds.width - 32;
+        const maxScheduleWidth = availableWidth - minSidebarWidth - handleWidth - 16;
+        if (maxScheduleWidth < minScheduleWidth) return;
+        const scheduleWidth = Math.max(minScheduleWidth, Math.min(clientX - bounds.left - 16, maxScheduleWidth));
+        main.style.gridTemplateColumns = `${scheduleWidth}px ${handleWidth}px minmax(${minSidebarWidth}px, 1fr)`;
+    };
+    const saveScheduleWidth = () => {
+        saveSchedulePreferences({
+            scheduleWidth: document.querySelector(".schedule-grid-container").getBoundingClientRect().width
+        });
+    };
+
+    const savedWidth = Number(getSchedulePreferences().scheduleWidth);
+    if (Number.isFinite(savedWidth) && savedWidth > 0) {
+        resizeTo(main.getBoundingClientRect().left + savedWidth + 16);
+    }
+
+    handle.addEventListener("pointerdown", event => {
+        event.preventDefault();
+        handle.setPointerCapture(event.pointerId);
+        resizeTo(event.clientX);
+    });
+    handle.addEventListener("pointermove", event => {
+        if (handle.hasPointerCapture(event.pointerId)) resizeTo(event.clientX);
+    });
+    handle.addEventListener("pointerup", saveScheduleWidth);
+    handle.addEventListener("keydown", event => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const currentWidth = document.querySelector(".schedule-grid-container").getBoundingClientRect().width;
+        const nextWidth = currentWidth + (event.key === "ArrowRight" ? 24 : -24);
+        resizeTo(main.getBoundingClientRect().left + nextWidth + 16);
+        saveScheduleWidth();
     });
 }
 
+function persistSchedule() {
+    localStorage.setItem("scheduleWeeks", JSON.stringify(scheduleWeeks));
+}
 
-// ===============================
-// ASSIGN EMPLOYEE TO SHIFT
-// ===============================
+function showScheduleError(message) {
+    const error = document.getElementById("scheduleError");
+    const panel = error.closest(".schedule-error-panel");
+    const openButton = document.getElementById("openScheduleErrorBtn");
+    const closeButton = document.getElementById("closeScheduleErrorBtn");
+    const isLongError = message.split(/\r?\n/).length > 5;
 
-document.getElementById("assignShiftBtn").addEventListener("click", () => {
-    if (!selectedShift) return;
+    error.textContent = message;
+    panel.classList.add("has-error");
+    panel.classList.remove("is-success");
+    panel.classList.toggle("has-long-error", isLongError);
+    panel.classList.remove("expanded");
+    openButton.textContent = "Open errors";
+    closeButton.textContent = "Close errors";
+    openButton.hidden = !isLongError;
+    closeButton.hidden = true;
+}
 
-    const selectedEmp = document.querySelector(".available-employee.selected");
-    if (!selectedEmp) return;
+function showScheduleSuccess(message) {
+    showScheduleError(message);
+    const panel = document.querySelector(".schedule-error-panel");
+    panel.classList.add("is-success");
+    document.getElementById("openScheduleErrorBtn").textContent = "Open details";
+    document.getElementById("closeScheduleErrorBtn").textContent = "Close details";
+}
 
-    const empId = Number(selectedEmp.dataset.empId);
+function clearScheduleError() {
+    document.getElementById("scheduleError").textContent = "";
+    const panel = document.querySelector(".schedule-error-panel");
+    panel.classList.remove("has-error", "has-long-error", "expanded", "is-success");
+    const openButton = document.getElementById("openScheduleErrorBtn");
+    const closeButton = document.getElementById("closeScheduleErrorBtn");
+    openButton.hidden = true;
+    closeButton.hidden = true;
+    openButton.textContent = "Open errors";
+    closeButton.textContent = "Close errors";
+}
 
-    scheduleWeeks[currentWeekId].days[currentDay][selectedShift.shiftKey].employee = empId;
-
-    renderDay(currentDay);
+document.getElementById("openScheduleErrorBtn").addEventListener("click", () => {
+    const panel = document.querySelector(".schedule-error-panel");
+    panel.classList.add("expanded");
+    document.getElementById("openScheduleErrorBtn").hidden = true;
+    document.getElementById("closeScheduleErrorBtn").hidden = false;
 });
 
-
-// ===============================
-// REMOVE EMPLOYEE FROM SHIFT
-// ===============================
-
-document.getElementById("removeShiftBtn").addEventListener("click", () => {
-    if (!selectedShift) return;
-
-    scheduleWeeks[currentWeekId].days[currentDay][selectedShift.shiftKey].employee = null;
-
-    renderDay(currentDay);
+document.getElementById("closeScheduleErrorBtn").addEventListener("click", () => {
+    const panel = document.querySelector(".schedule-error-panel");
+    panel.classList.remove("expanded");
+    document.getElementById("closeScheduleErrorBtn").hidden = true;
+    document.getElementById("openScheduleErrorBtn").hidden = false;
 });
 
+document.getElementById("removeShiftBtn").addEventListener("click", removeSelectedShift);
 
-// ===============================
-// UPDATE ASSIGNMENT BUTTONS
-// ===============================
-
-function updateAssignmentButtons() {
-    const assignBtn = document.getElementById("assignShiftBtn");
-    const removeBtn = document.getElementById("removeShiftBtn");
-
-    if (!selectedShift || scheduleLocked) {
-        assignBtn.disabled = true;
-        removeBtn.disabled = true;
-    } else {
-        assignBtn.disabled = false;
-        removeBtn.disabled = false;
+document.addEventListener("keydown", event => {
+    const target = event.target;
+    if (target instanceof Element
+        && (target.closest("input, textarea, select, [contenteditable='true'], dialog[open]"))) {
+        return;
     }
+
+    if ((event.key === "Backspace" || event.key === "Delete") && selectedShift) {
+        event.preventDefault();
+        removeSelectedShift();
+        return;
+    }
+
+    if ((event.code === "Space" || event.key === " ") && (selectedShift || selectedEmployeeId !== null)) {
+        event.preventDefault();
+        selectedShift = null;
+        selectedEmployeeId = null;
+        populateEmployeeSidebar();
+        clearScheduleError();
+        renderScheduleGrid();
+        updateScheduleControls();
+    }
+});
+
+document.getElementById("addEmployeeBtn").addEventListener("click", () => {
+    window.dispatchEvent(new CustomEvent("employee-colors-changed"));
+    document.getElementById("createEmployeeDialog").showModal();
+});
+
+document.getElementById("closeCreateEmployeeBtn").addEventListener("click", () => {
+    document.getElementById("createEmployeeDialog").close();
+});
+
+document.getElementById("createEmployeeDialog").addEventListener("click", event => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+window.addEventListener("employee-created", () => {
+    employees = JSON.parse(localStorage.getItem("employees") || "{}");
+    populateEmployeeSidebar();
+    document.getElementById("createEmployeeDialog").close();
+    document.getElementById("createEmployeeError").textContent = "";
+    updateScheduleControls();
+});
+
+function isEmployeeAvailableAt(employeeId, day, time, includeTimeOff = true, weekId = currentWeekId) {
+    const employee = getEmployeeById(employeeId);
+    if (!employee) return { available: false };
+    if (includeTimeOff && isEmployeeOnTimeOff(employee, getScheduleDateForDay(weekId, day))) {
+        return { available: false, reason: "timeOff" };
+    }
+    const availability = employee.availability;
+    if (!availability || typeof availability !== "object"
+        || !Object.prototype.hasOwnProperty.call(availability, day)) {
+        return { available: true };
+    }
+
+    const dayAvailability = availability[day];
+    const blocks = dayAvailability && typeof dayAvailability === "object"
+        ? Object.values(dayAvailability).filter(block => block && typeof block === "object")
+        : [];
+    const ranges = blocks
+        .map(block => ({
+            start: block.start_time || block.start,
+            end: block.end_time || block.end
+        }))
+        .filter(range => range.start && range.end);
+    const legacyDefault = blocks.length >= 2 && blocks.every(block =>
+        !block.start_time && !block.start && !block.end_time && !block.end
+    );
+    if (legacyDefault) return { available: true };
+    if (ranges.length === 0) {
+        const explicitlyRestricted = blocks.some(block =>
+            Object.prototype.hasOwnProperty.call(block, "start_time")
+            || Object.prototype.hasOwnProperty.call(block, "start")
+            || Object.prototype.hasOwnProperty.call(block, "end_time")
+            || Object.prototype.hasOwnProperty.call(block, "end")
+        );
+        return { available: !explicitlyRestricted };
+    }
+
+    const slotStart = timeToMinutes(time);
+    const slotEnd = slotStart === null ? null : slotStart + 60;
+    return {
+        available: ranges.some(range => {
+            const start = timeToMinutes(range.start);
+            const end = timeToMinutes(range.end);
+            return start !== null && end !== null && slotStart >= start && slotEnd <= end;
+        })
+    };
+}
+
+function isEmployeeOnTimeOff(employee, scheduleDate) {
+    if (!scheduleDate || !Array.isArray(employee.timeOff)) return false;
+    return employee.timeOff.some(period => {
+        const startDate = parseScheduleDate(period && period.start_date);
+        const endDate = parseScheduleDate(period && period.end_date);
+        return startDate && endDate
+            && scheduleDate >= dateToScheduleKey(startDate)
+            && scheduleDate <= dateToScheduleKey(endDate);
+    });
+}
+
+function reconcileAvailabilityConflicts(employeeIds = null, weekIds = Object.keys(scheduleWeeks)) {
+    const affectedIds = employeeIds && new Set([...employeeIds].map(String));
+    const result = { removed: [], locked: [] };
+    let changed = false;
+
+    weekIds.forEach(weekId => {
+        const week = scheduleWeeks[weekId];
+        if (!week || !week.days) return;
+        scheduleDays.forEach(day => {
+            const shifts = getDayShifts(day.key, weekId);
+            shifts.forEach(shift => {
+                const employeeId = getShiftEmployeeId(shift.info);
+                if (employeeId === null || employeeId === undefined
+                    || (affectedIds && !affectedIds.has(String(employeeId)))) return;
+                const unavailableIndexes = [];
+                for (let index = Math.max(0, shift.startIndex);
+                    index < Math.min(scheduleTimes.length, shift.endIndex);
+                    index++) {
+                    if (!isEmployeeAvailableAt(employeeId, day.key, scheduleTimes[index], true, weekId).available) {
+                        unavailableIndexes.push(index);
+                    }
+                }
+                if (!unavailableIndexes.length) return;
+
+                const conflict = { weekId, day: day.key, employeeId, unavailableIndexes };
+                const conflicts = week.locked ? result.locked : result.removed;
+                conflicts.push(conflict);
+                if (!week.locked) {
+                    delete week.days[day.key][shift.key];
+                    if (weekId === currentWeekId
+                        && selectedShift?.day === day.key
+                        && selectedShift.shiftKey === shift.key) {
+                        selectedShift = null;
+                    }
+                    changed = true;
+                }
+            });
+        });
+    });
+
+    if (changed) persistSchedule();
+    return result;
+}
+
+function formatAvailabilityConflict(conflict) {
+    const date = parseScheduleDate(getScheduleDateForDay(conflict.weekId, conflict.day));
+    const dateLabel = date ? ` ${formatMonthDay(date)}` : "";
+    const times = conflict.unavailableIndexes;
+    const ranges = [];
+    let start = times[0];
+    let previous = times[0];
+    times.slice(1).forEach(index => {
+        if (index !== previous + 1) {
+            ranges.push(`${formatScheduleTime(scheduleTimes[start])}-${formatScheduleTime(indexToTime(previous + 1))}`);
+            start = index;
+        }
+        previous = index;
+    });
+    ranges.push(`${formatScheduleTime(scheduleTimes[start])}-${formatScheduleTime(indexToTime(previous + 1))}`);
+    return `${getEmployeeName(conflict.employeeId)}: ${getDayLabel(conflict.day)}${dateLabel}, ${ranges.join(", ")}`;
+}
+
+function showAvailabilityConflictResult(result, message) {
+    const details = [
+        ...result.removed.map(conflict => `Removed shift for availability conflict — ${formatAvailabilityConflict(conflict)}.`),
+        ...result.locked.map(conflict => `Locked schedule has an availability conflict — ${formatAvailabilityConflict(conflict)}.`)
+    ];
+    if (details.length) showScheduleError(`${message}\n${details.join("\n")}`);
+    else clearScheduleError();
 }
 
 
@@ -285,9 +1119,9 @@ function populateEmployeeSidebar() {
     list.innerHTML = "";
 
     const groups = [
-        { label: "GSS", data: employees.GSS || [] },
-        { label: "Key Holders", data: employees.GSS_key_holder || [] },
-        { label: "Managers", data: employees.Manager || [] }
+        { key: "GSS", label: "GSS", data: employees.GSS || [] },
+        { key: "GSS_key_holder", label: "Key Holders", data: employees.GSS_key_holder || [] },
+        { key: "Manager", label: "Managers", data: employees.Manager || [] }
     ];
 
     groups.forEach(group => {
@@ -299,57 +1133,698 @@ function populateEmployeeSidebar() {
             const div = document.createElement("div");
             div.classList.add("employee-item");
 
-            div.innerHTML = `
-                <span>${emp.name}</span>
-                <button class="remove-employee-btn" data-id="${emp.id}" data-role="${group.label}">
-                    Remove
-                </button>
-            `;
+            const avatarButton = document.createElement("button");
+            avatarButton.type = "button";
+            avatarButton.classList.add("employee-avatar-button");
+            avatarButton.setAttribute("aria-label", `View ${emp.name || "employee"} details`);
+            avatarButton.addEventListener("click", () => showEmployeeDetails(emp, group.key));
+
+            const avatar = document.createElement("span");
+            avatar.classList.add("employee-avatar");
+            avatar.style.backgroundColor = getEmployeeColor(emp.id);
+
+            const initials = document.createElement("span");
+            initials.textContent = getEmployeeInitials(emp.name);
+            avatar.appendChild(initials);
+
+            const profileImage = emp.profile_image || emp.profileImage;
+            if (profileImage) {
+                const image = document.createElement("img");
+                image.alt = "";
+                image.addEventListener("load", () => {
+                    initials.hidden = true;
+                });
+                image.addEventListener("error", () => {
+                    image.hidden = true;
+                });
+                avatar.appendChild(image);
+                image.src = profileImage;
+            }
+
+            const detailsButton = document.createElement("button");
+            detailsButton.type = "button";
+            detailsButton.classList.add("employee-details-button");
+            detailsButton.textContent = emp.name || "Unnamed employee";
+            detailsButton.style.borderLeft = `5px solid ${getEmployeeColor(emp.id)}`;
+            const isSelected = String(emp.id) === String(selectedEmployeeId);
+            detailsButton.classList.toggle("selected", isSelected);
+            detailsButton.setAttribute("aria-pressed", String(isSelected));
+            detailsButton.addEventListener("click", () => selectEmployee(emp));
+
+            const hours = document.createElement("span");
+            hours.classList.add("employee-weekly-hours");
+            hours.dataset.employeeId = String(emp.id);
+
+            avatarButton.appendChild(avatar);
+            div.append(avatarButton, detailsButton, hours);
 
             list.appendChild(div);
         });
     });
-
-    attachRemoveEmployeeListeners();
+    updateEmployeeWeeklyHours();
 }
 
-
-function attachRemoveEmployeeListeners() {
-    document.querySelectorAll(".remove-employee-btn").forEach(btn => {
-        btn.onclick = () => {
-            const id = Number(btn.dataset.id);
-            const role = btn.dataset.role;
-            removeEmployee(id, role);
-        };
+function updateEmployeeWeeklyHours() {
+    if (!currentWeekId || !scheduleWeeks[currentWeekId]) return;
+    getAllEmployees().forEach(employee => {
+        const totalMinutes = scheduleDays.flatMap(day => getDayShifts(day.key).filter(shift =>
+            String(getShiftEmployeeId(shift.info)) === String(employee.id)
+        )).reduce((total, shift) => {
+            const start = timeToMinutes(shift.startTime);
+            const end = timeToMinutes(shift.endTime);
+            return start === null || end === null ? total : total + end - start;
+        }, 0);
+        const hours = totalMinutes / 60;
+        const displayHours = Number.isInteger(hours) ? String(hours) : hours.toFixed(1);
+        const badge = document.querySelector(`.employee-weekly-hours[data-employee-id="${CSS.escape(String(employee.id))}"]`);
+        if (!badge) return;
+        badge.textContent = `${displayHours}h`;
+        badge.classList.toggle("over-40-hours", hours >= 40);
+        badge.classList.toggle("low-hours", hours <= 15);
+        badge.classList.toggle("hours-size-small", hours <= 15);
+        badge.classList.toggle("hours-size-medium", hours > 15 && hours < 40);
+        badge.classList.toggle("hours-size-large", hours >= 40);
+        badge.setAttribute("aria-label", `${displayHours} scheduled hours this week`);
+        badge.title = `${displayHours} scheduled hours this week`;
     });
 }
 
-
-function removeEmployee(id, role) {
-    const confirmDelete = confirm("Are you sure you want to remove this employee?");
-    if (!confirmDelete) return;
-
-    // Determine correct group
-    let groupKey = "";
-    if (role === "GSS") groupKey = "GSS";
-    else if (role === "Key Holders") groupKey = "GSS_key_holder";
-    else if (role === "Managers") groupKey = "Manager";
-
-    // Remove employee from the group
-    employees[groupKey] = employees[groupKey].filter(emp => emp.id !== id);
-
-    // Save updated list
-    localStorage.setItem("employees", JSON.stringify(employees));
-
-    // Remove employee from any assigned shifts
-    removeEmployeeFromSchedule(id);
-
-    // Refresh UI
+function selectEmployee(employee) {
+    selectedShift = null;
+    selectedEmployeeId = String(selectedEmployeeId) === String(employee.id)
+        ? null
+        : employee.id;
     populateEmployeeSidebar();
-    renderDay(currentDay);
-
-    alert("Employee removed successfully.");
+    clearScheduleError();
+    renderScheduleGrid();
+    updateScheduleControls();
 }
+
+function getEmployeeInitials(name) {
+    return (name || "?")
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .map(part => part.charAt(0))
+        .join("")
+        .toUpperCase() || "?";
+}
+
+function getAllEmployees() {
+    return [
+        ...(employees.GSS || []),
+        ...(employees.GSS_key_holder || []),
+        ...(employees.Manager || [])
+    ];
+}
+
+function getEmployeeById(id) {
+    if (id === null || id === undefined) return null;
+    return getAllEmployees().find(employee => String(employee.id) === String(id)) || null;
+}
+
+function getDayLabel(day) {
+    return {
+        sun: "Sunday",
+        mon: "Monday",
+        tue: "Tuesday",
+        wed: "Wednesday",
+        thu: "Thursday",
+        fri: "Friday",
+        sat: "Saturday"
+    }[day] || day;
+}
+
+function timeToMinutes(time) {
+    if (typeof time !== "string" || !/^\d{2}:\d{2}$/.test(time)) return null;
+    const [hour, minute] = time.split(":").map(Number);
+    if (hour > 23 || minute > 59) return null;
+    return hour * 60 + minute;
+}
+
+function showEmployeeDetails(employee, groupKey) {
+    const dialog = document.getElementById("employeeDetailsDialog");
+    const image = document.getElementById("detailsProfileImage");
+    const fallback = document.getElementById("detailsAvatarFallback");
+    const name = employee.name || "Unnamed employee";
+
+    document.getElementById("detailsEmployeeName").textContent = name;
+    document.getElementById("detailsJobPosition").textContent =
+        getJobPositionLabel(employee.job_position || groupKey);
+    document.getElementById("detailsEmployeeId").textContent =
+        employee.id === undefined || employee.id === null ? "Not provided" : String(employee.id);
+    fallback.textContent = getEmployeeInitials(name);
+    fallback.hidden = false;
+
+    image.hidden = true;
+    image.removeAttribute("src");
+    const profileImage = employee.profile_image || employee.profileImage;
+    if (profileImage) {
+        image.src = profileImage;
+        image.hidden = false;
+        image.onload = () => {
+            fallback.hidden = true;
+        };
+        image.onerror = () => {
+            image.hidden = true;
+        };
+    }
+
+    populateEmployeeDetailsList(
+        document.getElementById("detailsAvailability"),
+        formatEmployeeAvailability(employee.availability)
+    );
+    populateEmployeeDetailsList(
+        document.getElementById("detailsTimeOff"),
+        formatEmployeeTimeOff(employee.timeOff)
+    );
+
+    activeDetailsEmployee = employee;
+    activeDetailsGroupKey = groupKey;
+    editingTimeOffIndex = null;
+    timeOffDraft = Array.isArray(employee.timeOff)
+        ? employee.timeOff.map(period => ({ ...period }))
+        : [];
+    document.getElementById("availabilityEditSection").hidden = true;
+    document.getElementById("editAvailabilityBtn").textContent = "Edit Availability";
+    document.getElementById("timeOffEditSection").hidden = true;
+    document.getElementById("editTimeOffBtn").textContent = "Edit Time Off";
+    document.getElementById("employeeTimeOffForm").hidden = true;
+    document.getElementById("timeOffEditError").textContent = "";
+    renderTimeOffDraft();
+    employeePendingDeletion = { employee, groupKey };
+    dialog.showModal();
+}
+
+document.getElementById("editProfileImageBtn").addEventListener("click", () => {
+    if (!activeDetailsEmployee) return;
+    const image = activeDetailsEmployee.profile_image || activeDetailsEmployee.profileImage || "";
+    document.getElementById("updatedProfileImageUrl").value =
+        image.startsWith("data:image/") ? "" : image;
+    document.getElementById("updatedProfileImageFile").value = "";
+    document.getElementById("profileImageEditError").textContent = "";
+    pendingProfileImage = "";
+    profileImageRead = Promise.resolve();
+    document.getElementById("editProfileImageDialog").showModal();
+});
+
+document.getElementById("updatedProfileImageFile").addEventListener("change", event => {
+    const file = event.currentTarget.files[0];
+    pendingProfileImage = "";
+    document.getElementById("profileImageEditError").textContent = "";
+    if (!file) {
+        profileImageRead = Promise.resolve();
+        return;
+    }
+    if (!file.type.startsWith("image/")) {
+        document.getElementById("profileImageEditError").textContent = "Choose a valid image file.";
+        event.currentTarget.value = "";
+        profileImageRead = Promise.resolve();
+        return;
+    }
+    profileImageRead = new Promise(resolve => {
+        const reader = new FileReader();
+        reader.addEventListener("load", () => {
+            if (typeof reader.result === "string") pendingProfileImage = reader.result;
+            resolve();
+        });
+        reader.addEventListener("error", () => {
+            document.getElementById("profileImageEditError").textContent = "The selected image could not be read.";
+            event.currentTarget.value = "";
+            resolve();
+        });
+        reader.readAsDataURL(file);
+    });
+});
+
+document.getElementById("saveProfileImageBtn").addEventListener("click", async () => {
+    if (!activeDetailsEmployee) return;
+    await profileImageRead;
+    const url = document.getElementById("updatedProfileImageUrl").value.trim();
+    let imageSource = pendingProfileImage;
+    if (!imageSource && url) {
+        try {
+            const parsedUrl = new URL(url);
+            if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") throw new Error("Unsupported image URL protocol.");
+            imageSource = url;
+        } catch {
+            document.getElementById("profileImageEditError").textContent = "Enter a valid HTTP or HTTPS image URL, or choose an image file.";
+            return;
+        }
+    }
+    if (!imageSource) {
+        document.getElementById("profileImageEditError").textContent =
+            "Enter an image URL or choose an image file.";
+        return;
+    }
+
+    const previousImage = activeDetailsEmployee.profile_image;
+    const previousLegacyImage = activeDetailsEmployee.profileImage;
+    activeDetailsEmployee.profile_image = imageSource;
+    delete activeDetailsEmployee.profileImage;
+    try {
+        persistEmployees();
+    } catch (error) {
+        if (previousImage === undefined) delete activeDetailsEmployee.profile_image;
+        else activeDetailsEmployee.profile_image = previousImage;
+        if (previousLegacyImage !== undefined) activeDetailsEmployee.profileImage = previousLegacyImage;
+        document.getElementById("profileImageEditError").textContent = "Could not save this image. It may be too large for local storage.";
+        return;
+    }
+    refreshEmployeeDetailsHeader();
+    populateEmployeeSidebar();
+    renderScheduleGrid();
+    document.getElementById("editProfileImageDialog").close();
+});
+
+document.getElementById("cancelProfileImageBtn").addEventListener("click", () => {
+    document.getElementById("editProfileImageDialog").close();
+});
+
+document.getElementById("editEmployeeInfoBtn").addEventListener("click", () => {
+    if (!activeDetailsEmployee) return;
+    document.getElementById("updatedEmployeeName").value = activeDetailsEmployee.name || "";
+    document.getElementById("updatedEmployeePosition").value =
+        activeDetailsEmployee.job_position || activeDetailsGroupKey;
+    populateEmployeeColorSelect(
+        document.getElementById("updatedEmployeeColor"),
+        activeDetailsEmployee.scheduleColor,
+        activeDetailsEmployee
+    );
+    document.getElementById("employeeInfoEditError").textContent = "";
+    document.getElementById("editEmployeeInfoDialog").showModal();
+});
+
+document.getElementById("cancelEmployeeInfoBtn").addEventListener("click", () => {
+    document.getElementById("editEmployeeInfoDialog").close();
+});
+
+document.getElementById("saveEmployeeInfoBtn").addEventListener("click", () => {
+    if (!activeDetailsEmployee || !activeDetailsGroupKey) return;
+    const name = document.getElementById("updatedEmployeeName").value.trim();
+    const position = document.getElementById("updatedEmployeePosition").value;
+    if (!name) {
+        document.getElementById("employeeInfoEditError").textContent = "Employee name is required.";
+        return;
+    }
+    const oldGroup = activeDetailsGroupKey;
+    const previousName = activeDetailsEmployee.name;
+    const previousPosition = activeDetailsEmployee.job_position;
+    const previousColor = activeDetailsEmployee.scheduleColor;
+    const color = document.getElementById("updatedEmployeeColor").value;
+    if (!isEmployeeColorAvailable(color, activeDetailsEmployee)) {
+        document.getElementById("employeeInfoEditError").textContent =
+            "That color is already assigned. Choose an available color.";
+        return;
+    }
+    activeDetailsEmployee.name = name;
+    activeDetailsEmployee.job_position = position;
+    activeDetailsEmployee.scheduleColor = color;
+    if (oldGroup !== position) {
+        employees[oldGroup] = (employees[oldGroup] || []).filter(employee => employee !== activeDetailsEmployee);
+        employees[position] = employees[position] || [];
+        employees[position].push(activeDetailsEmployee);
+    }
+    try {
+        persistEmployees();
+    } catch (error) {
+        activeDetailsEmployee.name = previousName;
+        if (previousPosition === undefined) delete activeDetailsEmployee.job_position;
+        else activeDetailsEmployee.job_position = previousPosition;
+        if (previousColor === undefined) delete activeDetailsEmployee.scheduleColor;
+        else activeDetailsEmployee.scheduleColor = previousColor;
+        if (oldGroup !== position) {
+            employees[position] = (employees[position] || []).filter(employee => employee !== activeDetailsEmployee);
+            employees[oldGroup] = employees[oldGroup] || [];
+            employees[oldGroup].push(activeDetailsEmployee);
+        }
+        document.getElementById("employeeInfoEditError").textContent = "Could not save employee changes.";
+        return;
+    }
+    activeDetailsGroupKey = position;
+    if (employeePendingDeletion) employeePendingDeletion.groupKey = position;
+    refreshEmployeeDetailsHeader();
+    populateEmployeeSidebar();
+    renderScheduleGrid();
+    document.getElementById("editEmployeeInfoDialog").close();
+});
+
+function refreshEmployeeDetailsHeader() {
+    if (!activeDetailsEmployee) return;
+    const image = document.getElementById("detailsProfileImage");
+    const fallback = document.getElementById("detailsAvatarFallback");
+    const name = activeDetailsEmployee.name || "Unnamed employee";
+    document.getElementById("detailsEmployeeName").textContent = name;
+    document.getElementById("detailsJobPosition").textContent =
+        getJobPositionLabel(activeDetailsEmployee.job_position || activeDetailsGroupKey);
+    fallback.textContent = getEmployeeInitials(name);
+    fallback.hidden = false;
+    image.hidden = true;
+    image.removeAttribute("src");
+    const profileImage = activeDetailsEmployee.profile_image || activeDetailsEmployee.profileImage;
+    if (!profileImage) return;
+    image.onload = () => { fallback.hidden = true; };
+    image.onerror = () => { image.hidden = true; };
+    image.src = profileImage;
+    image.hidden = false;
+}
+
+function renderEmployeeAvailabilityEditor(employee) {
+    const body = document.getElementById("employeeAvailabilityBody");
+    body.replaceChildren();
+    scheduleTimes.forEach(time => {
+        const row = document.createElement("tr");
+        const timeLabel = document.createElement("td");
+        timeLabel.classList.add("time-label");
+        timeLabel.textContent = formatScheduleTime(time);
+        row.appendChild(timeLabel);
+
+        scheduleDays.forEach(day => {
+            const cell = document.createElement("td");
+            cell.classList.add("avail-cell");
+            cell.dataset.day = day.key;
+            cell.dataset.time = time;
+            cell.classList.add(isEmployeeAvailableAt(employee.id, day.key, time, false).available
+                ? "available"
+                : "unavailable");
+            row.appendChild(cell);
+        });
+        body.appendChild(row);
+    });
+}
+
+function saveEmployeeAvailability() {
+    if (!activeDetailsEmployee) return;
+    const availability = {};
+    let hasUnavailableTime = false;
+    scheduleDays.forEach(day => {
+        const dayCells = [...document.querySelectorAll(`#employeeAvailabilityBody .avail-cell[data-day="${day.key}"]`)];
+        const availableIndexes = dayCells
+            .filter(cell => cell.classList.contains("available"))
+            .map(cell => scheduleTimes.indexOf(cell.dataset.time));
+        if (availableIndexes.length !== scheduleTimes.length) hasUnavailableTime = true;
+        availability[day.key] = availabilityBlocksFromIndexes(availableIndexes);
+    });
+    activeDetailsEmployee.availability = hasUnavailableTime ? availability : null;
+    persistEmployees();
+    const conflicts = reconcileAvailabilityConflicts(new Set([activeDetailsEmployee.id]));
+    document.getElementById("availabilityEditSection").hidden = true;
+    document.getElementById("editAvailabilityBtn").textContent = "Edit Availability";
+    populateEmployeeDetailsList(
+        document.getElementById("detailsAvailability"),
+        formatEmployeeAvailability(activeDetailsEmployee.availability)
+    );
+    renderScheduleGrid();
+    updateScheduleControls();
+    showAvailabilityConflictResult(conflicts, "Availability saved.");
+}
+
+function availabilityBlocksFromIndexes(indexes) {
+    if (!indexes.length) return { block_1: { start_time: null, end_time: null } };
+    const blocks = [];
+    let start = indexes[0];
+    let previous = indexes[0];
+    indexes.slice(1).forEach(index => {
+        if (index !== previous + 1) {
+            blocks.push({ start_time: indexToTime(start), end_time: indexToTime(previous + 1) });
+            start = index;
+        }
+        previous = index;
+    });
+    blocks.push({ start_time: indexToTime(start), end_time: indexToTime(previous + 1) });
+    return Object.fromEntries(blocks.map((block, index) => [`block_${index + 1}`, block]));
+}
+
+function persistEmployees() {
+    localStorage.setItem("employees", JSON.stringify(employees));
+}
+
+function renderTimeOffDraft() {
+    const list = document.getElementById("timeOffEditList");
+    list.replaceChildren();
+    if (timeOffDraft.length === 0) {
+        const empty = document.createElement("p");
+        empty.textContent = "No days off scheduled.";
+        list.appendChild(empty);
+        return;
+    }
+
+    timeOffDraft.forEach((period, index) => {
+        const row = document.createElement("div");
+        row.classList.add("time-off-edit-item");
+        const dates = document.createElement("span");
+        dates.textContent = formatEmployeeTimeOff([period])[0];
+        const updateButton = document.createElement("button");
+        updateButton.type = "button";
+        updateButton.textContent = "Update";
+        updateButton.addEventListener("click", () => openTimeOffEditor(index));
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.classList.add("delete-employee-button");
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", () => {
+            timeOffDraft.splice(index, 1);
+            renderTimeOffDraft();
+        });
+        row.append(dates, updateButton, deleteButton);
+        list.appendChild(row);
+    });
+}
+
+function openTimeOffEditor(index) {
+    const period = timeOffDraft[index];
+    if (!period) return;
+    editingTimeOffIndex = index;
+    document.getElementById("editTimeOffStart").value = period.start_date || "";
+    document.getElementById("editTimeOffEnd").value = period.end_date || "";
+    document.getElementById("editTimeOffError").textContent = "";
+    document.getElementById("editTimeOffDialog").showModal();
+}
+
+function isValidTimeOffRange(start, end) {
+    return Boolean(start && end && start <= end);
+}
+
+function getJobPositionLabel(position) {
+    return {
+        GSS: "GSS",
+        GSS_key_holder: "GSS-Key Holder",
+        Manager: "Manager"
+    }[position] || position || "Not provided";
+}
+
+function populateEmployeeDetailsList(list, entries) {
+    list.replaceChildren();
+    entries.forEach(entry => {
+        const item = document.createElement("li");
+        item.textContent = entry;
+        list.appendChild(item);
+    });
+}
+
+function formatEmployeeAvailability(availability) {
+    if (!availability || typeof availability !== "object") {
+        return ["All days: Fully available (6am-10pm)"];
+    }
+
+    const days = [
+        ["sun", "Sunday"],
+        ["mon", "Monday"],
+        ["tue", "Tuesday"],
+        ["wed", "Wednesday"],
+        ["thu", "Thursday"],
+        ["fri", "Friday"],
+        ["sat", "Saturday"]
+    ];
+
+    return days.map(([key, label]) => {
+        if (!Object.prototype.hasOwnProperty.call(availability, key)) {
+            return `${label}: Fully available (6am-10pm)`;
+        }
+        const dayAvailability = availability[key] || {};
+        const blocks = Object.values(dayAvailability)
+            .filter(block => block && (block.start_time || block.start) && (block.end_time || block.end))
+            .map(block => `${formatScheduleTime(block.start_time || block.start)}-${formatScheduleTime(block.end_time || block.end)}`);
+        const explicitlyRestricted = Object.values(dayAvailability).some(block =>
+            block && typeof block === "object"
+            && (Object.prototype.hasOwnProperty.call(block, "start_time")
+                || Object.prototype.hasOwnProperty.call(block, "start")
+                || Object.prototype.hasOwnProperty.call(block, "end_time")
+                || Object.prototype.hasOwnProperty.call(block, "end"))
+        );
+        const legacyDefaultAvailability = Object.keys(dayAvailability).length >= 2
+            && Object.values(dayAvailability).every(block =>
+                block && typeof block === "object"
+                && !block.start_time && !block.start && !block.end_time && !block.end
+            );
+        if (legacyDefaultAvailability) return `${label}: Fully available (6am-10pm)`;
+        return `${label}: ${blocks.length ? blocks.join(", ") : explicitlyRestricted ? "Unavailable" : "Fully available (6am-10pm)"}`;
+    });
+}
+
+function formatEmployeeTimeOff(timeOff) {
+    if (!Array.isArray(timeOff) || timeOff.length === 0) return ["None scheduled"];
+
+    return timeOff.map(period => {
+        if (!period || (!period.start_date && !period.end_date)) return "Dates not provided";
+        const start = formatEmployeeDate(period.start_date);
+        const end = formatEmployeeDate(period.end_date);
+        return start === end ? start : `${start} - ${end}`;
+    });
+}
+
+function formatEmployeeDate(date) {
+    if (!date) return "Date not provided";
+    const parsedDate = new Date(`${date}T00:00:00`);
+    return Number.isNaN(parsedDate.getTime())
+        ? String(date)
+        : parsedDate.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+document.getElementById("closeEmployeeDetailsBtn").addEventListener("click", () => {
+    document.getElementById("employeeDetailsDialog").close();
+});
+
+document.getElementById("editAvailabilityBtn").addEventListener("click", event => {
+    const section = document.getElementById("availabilityEditSection");
+    if (section.hidden) {
+        renderEmployeeAvailabilityEditor(activeDetailsEmployee);
+        section.hidden = false;
+        event.currentTarget.textContent = "Save Availability";
+    } else {
+        saveEmployeeAvailability();
+    }
+});
+
+document.getElementById("employeeAvailabilityBody").addEventListener("click", event => {
+    const cell = event.target.closest(".avail-cell");
+    if (!cell) return;
+    cell.classList.toggle("available");
+    cell.classList.toggle("unavailable");
+});
+
+document.querySelectorAll("#employeeAvailabilityTable thead th[data-day]").forEach(header => {
+    header.addEventListener("click", () => {
+        const cells = [...document.querySelectorAll(
+            `#employeeAvailabilityBody .avail-cell[data-day="${header.dataset.day}"]`
+        )];
+        const makeAvailable = cells.some(cell => cell.classList.contains("unavailable"));
+        cells.forEach(cell => {
+            cell.classList.toggle("available", makeAvailable);
+            cell.classList.toggle("unavailable", !makeAvailable);
+        });
+    });
+});
+
+document.getElementById("editTimeOffBtn").addEventListener("click", event => {
+    const section = document.getElementById("timeOffEditSection");
+    if (section.hidden) {
+        timeOffDraft = Array.isArray(activeDetailsEmployee.timeOff)
+            ? activeDetailsEmployee.timeOff.map(period => ({ ...period }))
+            : [];
+        renderTimeOffDraft();
+        section.hidden = false;
+        event.currentTarget.textContent = "Save Time Off";
+    } else {
+        if (!document.getElementById("employeeTimeOffForm").hidden) {
+            document.getElementById("timeOffEditError").textContent =
+                "Add the date range or close the add form before saving.";
+            return;
+        }
+        activeDetailsEmployee.timeOff = timeOffDraft.map(period => ({ ...period }));
+        persistEmployees();
+        const conflicts = reconcileAvailabilityConflicts(new Set([activeDetailsEmployee.id]));
+        populateEmployeeDetailsList(
+            document.getElementById("detailsTimeOff"),
+            formatEmployeeTimeOff(activeDetailsEmployee.timeOff)
+        );
+        renderScheduleGrid();
+        updateScheduleControls();
+        showAvailabilityConflictResult(conflicts, "Time off saved.");
+        section.hidden = true;
+        event.currentTarget.textContent = "Edit Time Off";
+        document.getElementById("timeOffEditError").textContent = "";
+    }
+});
+
+document.getElementById("addEmployeeTimeOffBtn").addEventListener("click", () => {
+    const form = document.getElementById("employeeTimeOffForm");
+    form.hidden = !form.hidden;
+    document.getElementById("timeOffEditError").textContent = "";
+});
+
+document.getElementById("saveNewEmployeeTimeOffBtn").addEventListener("click", () => {
+    const start = document.getElementById("employeeTimeOffStart").value;
+    const end = document.getElementById("employeeTimeOffEnd").value;
+    if (!isValidTimeOffRange(start, end)) {
+        document.getElementById("timeOffEditError").textContent =
+            "Choose a valid start and end date; the end date cannot be before the start date.";
+        return;
+    }
+    timeOffDraft.push({ start_date: start, end_date: end });
+    document.getElementById("employeeTimeOffStart").value = "";
+    document.getElementById("employeeTimeOffEnd").value = "";
+    document.getElementById("employeeTimeOffForm").hidden = true;
+    document.getElementById("timeOffEditError").textContent = "";
+    renderTimeOffDraft();
+});
+
+document.getElementById("saveEditedTimeOffBtn").addEventListener("click", () => {
+    const start = document.getElementById("editTimeOffStart").value;
+    const end = document.getElementById("editTimeOffEnd").value;
+    if (!isValidTimeOffRange(start, end)) {
+        document.getElementById("editTimeOffError").textContent =
+            "Choose a valid start and end date; the end date cannot be before the start date.";
+        return;
+    }
+    if (editingTimeOffIndex === null || !timeOffDraft[editingTimeOffIndex]) return;
+    timeOffDraft[editingTimeOffIndex] = { start_date: start, end_date: end };
+    renderTimeOffDraft();
+    editingTimeOffIndex = null;
+    document.getElementById("editTimeOffDialog").close();
+});
+
+document.getElementById("deleteEditedTimeOffBtn").addEventListener("click", () => {
+    if (editingTimeOffIndex === null) return;
+    timeOffDraft.splice(editingTimeOffIndex, 1);
+    renderTimeOffDraft();
+    editingTimeOffIndex = null;
+    document.getElementById("editTimeOffDialog").close();
+});
+
+document.getElementById("cancelEditedTimeOffBtn").addEventListener("click", () => {
+    editingTimeOffIndex = null;
+    document.getElementById("editTimeOffDialog").close();
+});
+
+document.getElementById("deleteEmployeeBtn").addEventListener("click", () => {
+    if (!employeePendingDeletion) return;
+
+    document.getElementById("deleteEmployeeMessage").textContent =
+        `Are you sure you want to delete ${employeePendingDeletion.employee.name || "this employee"}? This will also remove them from any assigned shifts.`;
+    document.getElementById("deleteEmployeeDialog").showModal();
+});
+
+document.getElementById("cancelEmployeeDeleteBtn").addEventListener("click", () => {
+    document.getElementById("deleteEmployeeDialog").close();
+});
+
+document.getElementById("confirmEmployeeDeleteBtn").addEventListener("click", () => {
+    if (!employeePendingDeletion) return;
+
+    const { employee, groupKey } = employeePendingDeletion;
+    employees[groupKey] = (employees[groupKey] || []).filter(emp => emp.id !== employee.id);
+    localStorage.setItem("employees", JSON.stringify(employees));
+    removeEmployeeFromSchedule(employee.id);
+    if (String(selectedEmployeeId) === String(employee.id)) selectedEmployeeId = null;
+    populateEmployeeSidebar();
+    renderScheduleGrid();
+    updateScheduleControls();
+
+    document.getElementById("deleteEmployeeDialog").close();
+    document.getElementById("employeeDetailsDialog").close();
+    employeePendingDeletion = null;
+});
 
 function removeEmployeeFromSchedule(empId) {
     Object.keys(scheduleWeeks).forEach(weekId => {
@@ -359,15 +1834,27 @@ function removeEmployeeFromSchedule(empId) {
             const shifts = week.days[day];
 
             Object.keys(shifts).forEach(shiftKey => {
-                if (shifts[shiftKey].employee === empId) {
-                    shifts[shiftKey].employee = null;
+                if (String(getShiftEmployeeId(shifts[shiftKey])) === String(empId)) {
+                    if (weekId === currentWeekId
+                        && selectedShift?.day === day
+                        && selectedShift.shiftKey === shiftKey) {
+                        selectedShift = null;
+                    }
+                    delete shifts[shiftKey];
                 }
             });
         });
     });
 
-    // Save updated schedule
-    localStorage.setItem("scheduleWeeks", JSON.stringify(scheduleWeeks));
+    persistSchedule();
+}
+
+function getShiftEmployeeId(shift) {
+    const employee = shift?.employee ?? shift?.employeeId ?? shift?.employee_id;
+    if (employee && typeof employee === "object") {
+        return employee.id ?? employee.employeeId ?? employee.employee_id;
+    }
+    return employee;
 }
 
 
@@ -384,19 +1871,109 @@ function getEmployeeName(id) {
         ...(employees.Manager || [])
     ];
 
-    const emp = all.find(e => e.id === id);
+    const emp = all.find(e => String(e.id) === String(id));
     return emp ? emp.name : "Unknown";
 }
 
+function getEmployeeColor(employeeId) {
+    const employee = getEmployeeById(employeeId);
+    return getEmployeeBaseColor(employee || { id: employeeId });
+}
+
+function getEmployeeBaseColor(employee) {
+    if (employeeColors.some(color => color.value === employee.scheduleColor)) {
+        return employee.scheduleColor;
+    }
+    const key = String(employee.id ?? "unassigned");
+    const stableIndex = [...key].reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 0)
+        % employeeColors.length;
+    return employeeColors[stableIndex].value;
+}
+
+function getUsedEmployeeColors(excludedEmployee = null) {
+    return new Set(getAllEmployees()
+        .filter(employee => employee !== excludedEmployee)
+        .map(employee => employee.scheduleColor)
+        .filter(color => employeeColors.some(option => option.value === color)));
+}
+
+function isEmployeeColorAvailable(color, excludedEmployee = null) {
+    return employeeColors.some(option => option.value === color)
+        && !getUsedEmployeeColors(excludedEmployee).has(color);
+}
+
+function populateEmployeeColorSelect(select, selectedValue = "random", excludedEmployee = null) {
+    const usedColors = getUsedEmployeeColors(excludedEmployee);
+    select.replaceChildren();
+    employeeColors.forEach(color => {
+        const option = document.createElement("option");
+        option.value = color.value;
+        option.textContent = usedColors.has(color.value) ? `${color.label} (in use)` : color.label;
+        option.style.backgroundColor = color.value;
+        option.style.color = getColorTextColor(color.value);
+        option.disabled = usedColors.has(color.value);
+        select.appendChild(option);
+    });
+    const desiredColorAvailable = employeeColors.some(color => color.value === selectedValue)
+        && !usedColors.has(selectedValue);
+    if (desiredColorAvailable) select.value = selectedValue;
+    else {
+        const firstAvailable = employeeColors.find(color => !usedColors.has(color.value));
+        if (firstAvailable) select.value = firstAvailable.value;
+        else select.value = "";
+    }
+}
+
+function ensureUniqueEmployeeColors() {
+    const usedColors = new Set();
+    const allEmployees = getAllEmployees();
+    for (const employee of allEmployees) {
+        const currentColor = employee.scheduleColor;
+        const isValidAndUnused = employeeColors.some(color => color.value === currentColor)
+            && !usedColors.has(currentColor);
+        const assignedColor = isValidAndUnused
+            ? currentColor
+            : employeeColors.find(color => !usedColors.has(color.value))?.value;
+        if (!assignedColor) return false;
+        employee.scheduleColor = assignedColor;
+        usedColors.add(assignedColor);
+    }
+    persistEmployees();
+    return true;
+}
+
+function getColorTextColor(hexColor) {
+    const channels = hexColor.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16));
+    const luminance = (channels[0] * 299 + channels[1] * 587 + channels[2] * 114) / 1000;
+    return luminance > 150 ? "#111827" : "#ffffff";
+}
 
 // ===============================
 // LOCK TOGGLE
 // ===============================
 
 document.getElementById("lockCheckbox").addEventListener("change", (e) => {
+    if (e.target.checked) {
+        const issues = validateWeekSchedule(currentWeekId);
+        if (issues.length) {
+            e.target.checked = false;
+            scheduleLocked = false;
+            showScheduleError(`Cannot lock this schedule until these requirements are met:\n${issues.map(issue => `- ${issue}`).join("\n")}`);
+            return;
+        }
+        clearScheduleError();
+    }
+
+    const wasLocked = scheduleLocked;
     scheduleLocked = e.target.checked;
     scheduleWeeks[currentWeekId].locked = scheduleLocked;
-    updateAssignmentButtons();
+    persistSchedule();
+    if (wasLocked && !scheduleLocked) {
+        const conflicts = reconcileAvailabilityConflicts(null, [currentWeekId]);
+        renderScheduleGrid();
+        showAvailabilityConflictResult(conflicts, "Schedule unlocked.");
+    }
+    updateScheduleControls();
 });
 
 
@@ -406,19 +1983,6 @@ document.getElementById("lockCheckbox").addEventListener("change", (e) => {
 
 document.getElementById("autoScheduleBtn").addEventListener("click", () => {
     alert("Auto-schedule coming soon!");
-});
-
-
-// ===============================
-// IMPORT / EXPORT (placeholder)
-// ===============================
-
-document.getElementById("importScheduleBtn").addEventListener("click", () => {
-    alert("Import coming soon!");
-});
-
-document.getElementById("exportScheduleBtn").addEventListener("click", () => {
-    alert("Export coming soon!");
 });
 
 
@@ -435,65 +1999,558 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
 // ===============================
 // EXPORT SCHEDULE DATA
 // ===============================
-document.getElementById("exportScheduleBtn").addEventListener("click", () => {
-    const data = {
-        employees: employees,
-        scheduleWeeks: scheduleWeeks,
-        defaultShifts: defaultShifts
-    };
-    
-    const blob = new Blob([JSON.stringify(data, null, 4)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "misters_schedule_export.json";
-    a.click();
-    
-    URL.revokeObjectURL(url);
-});
-
-// ===============================
-// IMPORT SCHEDULE DATA
-// ===============================
-
 document.getElementById("importScheduleBtn").addEventListener("click", () => {
     document.getElementById("importFileInput").click();
 });
 
 document.getElementById("importFileInput").addEventListener("change", async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
+    const input = event.currentTarget;
     try {
-        const text = await file.text();
-        const importedData = JSON.parse(text);
-
-        // Validate structure
-        if (!importedData.employees || !importedData.scheduleWeeks) {
-            alert("Invalid file format.");
-            return;
+        const files = [...input.files];
+        if (!files.length) return;
+        if (files.some(file => file.name.toLowerCase().endsWith(".json"))) {
+            if (files.length !== 1) throw new Error("Import a legacy JSON backup by itself, not alongside CSV files.");
+            await importLegacyJson(await files[0].text());
+        } else {
+            const sections = new Map();
+            for (const file of files) {
+                const section = parseCsvSection(await file.text());
+                if (sections.has(section.name)) {
+                    throw new Error(`More than one ${section.name} CSV was selected.`);
+                }
+                sections.set(section.name, section.rows);
+            }
+            await importCsvSections(sections);
         }
-
-        // Replace local data
-        employees = importedData.employees;
-        scheduleWeeks = importedData.scheduleWeeks;
-
-        // Save to localStorage
-        localStorage.setItem("employees", JSON.stringify(employees));
-        localStorage.setItem("scheduleWeeks", JSON.stringify(scheduleWeeks));
-
-        alert("Import successful!");
-
-        // Reload UI
-        populateEmployeeSidebar();
-        populateWeekSelector();
-
-        const firstWeek = Object.keys(scheduleWeeks)[0];
-        loadWeek(firstWeek);
-
-    } catch (err) {
-        alert("Error importing file.");
-        console.error(err);
+    } catch (error) {
+        showScheduleError(`Import failed: ${error.message}`);
+        console.error("Could not import schedule data.", error);
+    } finally {
+        input.value = "";
     }
 });
+
+document.getElementById("exportScheduleBtn").addEventListener("click", async () => {
+    try {
+        const employeesList = getAllEmployees();
+        const files = [
+            {
+                name: "employees.csv",
+                title: "EMPLOYEES",
+                instructions: "Edit one employee per row. New IDs add employees; existing IDs update them. Removing a row does not delete an employee.",
+                headers: ["Employee ID", "Employee Name", "Job Title", "Schedule Color", "Profile Image URL"],
+                guide: [
+                    "Unique ID used to connect this employee to availability, time off, and shifts.",
+                    "Employee's displayed name.",
+                    "Use GSS, GSS_key_holder, or Manager.",
+                    "Optional hex color, such as #52B8DA. Colors are made unique on import.",
+                    "Optional image URL."
+                ],
+                rows: employeesList.map(employee => [
+                    employee.id,
+                    employee.name || "",
+                    getEmployeePosition(employee),
+                    employee.scheduleColor || "",
+                    employee.profile_image || employee.profileImage || ""
+                ])
+            },
+            {
+                name: "availability.csv",
+                title: "EMPLOYEE AVAILABILITY",
+                instructions: "Add one row per employee and available range. Times use 24-hour HH:MM format; store hours are 06:00-22:00.",
+                headers: ["Employee ID", "Day", "Fully Available", "Available From", "Available Until"],
+                guide: [
+                    "Must match an Employee ID in employees.csv.",
+                    "Use sun, mon, tue, wed, thu, fri, or sat.",
+                    "Use true when available all day; use false for a specific range or no availability.",
+                    "When Fully Available is false, enter the start of an available range; leave blank if unavailable all day.",
+                    "When Fully Available is false, enter the end of an available range; leave blank if unavailable all day."
+                ],
+                rows: employeesList.flatMap(employee => getAvailabilityCsvRows(employee))
+            },
+            {
+                name: "time_off.csv",
+                title: "TIME OFF",
+                instructions: "Add one row per time-off period. Enter dates as YYYY-MM-DD. Leave both dates blank for no time off.",
+                headers: ["Employee ID", "First Day Off", "Last Day Off"],
+                guide: [
+                    "Must match an Employee ID in employees.csv.",
+                    "First date of the time-off period, YYYY-MM-DD.",
+                    "Last date of the time-off period, YYYY-MM-DD."
+                ],
+                rows: employeesList.flatMap(employee => {
+                    const timeOff = Array.isArray(employee.timeOff) ? employee.timeOff : [];
+                    return timeOff.length
+                        ? timeOff.map(period => [employee.id, period.start_date || "", period.end_date || ""])
+                        : [[employee.id, "", ""]];
+                })
+            },
+            {
+                name: "schedule.csv",
+                title: "WEEK SCHEDULE",
+                instructions: "This file contains shifts for the currently selected week. Add one shift per row; remove a row to remove its shift. Import replaces the selected week only; each employee can have one shift per day.",
+                headers: ["Day", "Employee ID", "Shift Start", "Shift End"],
+                guide: [
+                    "Use sun, mon, tue, wed, thu, fri, or sat.",
+                    "Must match an Employee ID in employees.csv.",
+                    "Use 24-hour HH:MM format, from 06:00 through 22:00.",
+                    "Use 24-hour HH:MM format. Shifts must be at least 3 hours."
+                ],
+                rows: scheduleDays.flatMap(day => getDayShifts(day.key).map(shift => [
+                    day.key,
+                    getShiftEmployeeId(shift.info) ?? "",
+                    shift.startTime,
+                    shift.endTime
+                ]))
+            }
+        ];
+
+        const links = document.getElementById("scheduleExportLinks");
+        links.replaceChildren();
+        files.forEach(file => links.appendChild(createCsvDownloadLink(file)));
+        document.getElementById("scheduleExportDialog").showModal();
+    } catch (error) {
+        showScheduleError(`Export failed: ${error.message}`);
+        console.error("Could not export schedule data.", error);
+    }
+});
+
+function getAvailabilityCsvRows(employee) {
+    const employeeAvailability = employee.availability;
+    return scheduleDays.flatMap(day => {
+        const dayAvailability = employeeAvailability && employeeAvailability[day.key];
+        if (!dayAvailability || typeof dayAvailability !== "object") {
+            return [[employee.id, day.key, "true", "", ""]];
+        }
+        const blocks = Object.values(dayAvailability).filter(block => block && typeof block === "object");
+        const legacyDefault = blocks.length >= 2 && blocks.every(block =>
+            !block.start_time && !block.start && !block.end_time && !block.end
+        );
+        if (legacyDefault) return [[employee.id, day.key, "true", "", ""]];
+
+        const ranges = blocks
+            .map(block => [block.start_time || block.start, block.end_time || block.end])
+            .filter(([start, end]) => start && end);
+        if (ranges.length) return ranges.map(([start, end]) => [employee.id, day.key, "false", start, end]);
+        const explicitlyRestricted = blocks.some(block =>
+            Object.prototype.hasOwnProperty.call(block, "start_time")
+            || Object.prototype.hasOwnProperty.call(block, "start")
+            || Object.prototype.hasOwnProperty.call(block, "end_time")
+            || Object.prototype.hasOwnProperty.call(block, "end")
+        );
+        return explicitlyRestricted
+            ? [[employee.id, day.key, "false", "", ""]]
+            : [[employee.id, day.key, "true", "", ""]];
+    });
+}
+
+function csvEscape(value) {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function createCsvDownloadLink({ name, title, instructions, headers, guide, rows }) {
+    const guideRow = ["# HELP - column guide", ...guide].map(csvEscape).join(",");
+    const csv = [
+        csvEscape(`# ${title}`),
+        csvEscape(`# ${instructions}`),
+        headers.map(csvEscape).join(","),
+        guideRow,
+        ...rows.map(row => row.map(csvEscape).join(","))
+    ].join("\r\n");
+    const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.className = "schedule-export-link";
+    link.href = url;
+    link.download = name;
+    link.textContent = `Download ${name}`;
+    link.dataset.blobUrl = url;
+    return link;
+}
+
+document.getElementById("closeScheduleExportBtn").addEventListener("click", () => {
+    document.getElementById("scheduleExportDialog").close();
+});
+
+document.getElementById("scheduleExportDialog").addEventListener("close", () => {
+    const links = document.getElementById("scheduleExportLinks");
+    links.querySelectorAll("a[data-blob-url]").forEach(link => URL.revokeObjectURL(link.dataset.blobUrl));
+    links.replaceChildren();
+});
+
+function parseCsvText(text) {
+    const records = [];
+    let row = [];
+    let value = "";
+    let quoted = false;
+    const source = text.replace(/^\uFEFF/, "");
+    for (let index = 0; index < source.length; index++) {
+        const character = source[index];
+        if (quoted) {
+            if (character === '"' && source[index + 1] === '"') {
+                value += '"';
+                index++;
+            } else if (character === '"') {
+                quoted = false;
+            } else {
+                value += character;
+            }
+        } else if (character === '"' && value.length === 0) {
+            quoted = true;
+        } else if (character === ",") {
+            row.push(value);
+            value = "";
+        } else if (character === "\n" || character === "\r") {
+            if (character === "\r" && source[index + 1] === "\n") index++;
+            row.push(value);
+            if (row.some(field => field.trim() !== "")) records.push(row);
+            row = [];
+            value = "";
+        } else {
+            value += character;
+        }
+    }
+    if (quoted) throw new Error("A CSV file has an unclosed quoted field.");
+    row.push(value);
+    if (row.some(field => field.trim() !== "")) records.push(row);
+    if (records.length < 1) throw new Error("A CSV file is empty.");
+
+    const normalizeHeader = header => {
+        const normalized = header.trim().toLowerCase().replace(/[\s-]+/g, "_");
+        return {
+            employee_name: "name",
+            job_title: "job_position",
+            profile_image_url: "profile_image",
+            available_from: "start_time",
+            available_until: "end_time",
+            first_day_off: "start_date",
+            last_day_off: "end_date",
+            shift_start: "start_time",
+            shift_end: "end_time"
+        }[normalized] || normalized;
+    };
+    const sectionForHeaders = headers => {
+        const headerSet = new Set(headers);
+        if (headerSet.has("name") && headerSet.has("job_position") && headerSet.has("employee_id")) return "employees";
+        if (headerSet.has("employee_id") && headerSet.has("day") && headerSet.has("fully_available")) return "availability";
+        if (headerSet.has("employee_id") && headerSet.has("start_date") && headerSet.has("end_date")) return "time_off";
+        if (headerSet.has("day") && headerSet.has("employee_id") && headerSet.has("start_time") && headerSet.has("end_time")) return "schedule";
+        return null;
+    };
+    const headerIndex = records.findIndex(record => sectionForHeaders(record.map(normalizeHeader)));
+    if (headerIndex === -1) throw new Error("CSV columns were not recognized. Select exported employees, availability, time_off, or schedule CSV files.");
+    const headers = records[headerIndex].map(normalizeHeader);
+    if (new Set(headers).size !== headers.length) throw new Error("A CSV file has duplicate column names.");
+    const rows = records.slice(headerIndex + 1)
+        .filter(record => !record[0].trim().toLowerCase().startsWith("# help"))
+        .map(record => Object.fromEntries(headers.map((header, index) => [
+        header,
+        record[index] || ""
+    ])));
+    return { headers, rows };
+}
+
+function parseCsvSection(text) {
+    const parsedCsv = parseCsvText(text);
+    const { headers: csvHeaders, rows } = parsedCsv;
+    const headers = new Set(csvHeaders);
+    if (headers.has("name") && headers.has("job_position") && headers.has("employee_id")) {
+        return { name: "employees", rows };
+    }
+    if (headers.has("employee_id") && headers.has("day") && headers.has("fully_available")) {
+        return { name: "availability", rows };
+    }
+    if (headers.has("employee_id") && headers.has("start_date") && headers.has("end_date")) {
+        return { name: "time_off", rows };
+    }
+    if (headers.has("day") && headers.has("employee_id") && headers.has("start_time") && headers.has("end_time")) {
+        return { name: "schedule", rows };
+    }
+    throw new Error("CSV columns were not recognized. Select exported employees, availability, time_off, or schedule CSV files.");
+}
+
+function parseBooleanField(value, label) {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+    throw new Error(`${label} must be true or false.`);
+}
+
+function normalizeEmployeeGroup(position) {
+    const value = String(position || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (value === "gss") return "GSS";
+    if (value === "gss_key_holder" || value === "key_holder") return "GSS_key_holder";
+    if (value === "manager") return "Manager";
+    throw new Error(`Unknown employee position "${position}".`);
+}
+
+function cloneEmployeeData(source) {
+    return JSON.parse(JSON.stringify(source));
+}
+
+function findEmployeeInData(employeeData, employeeId) {
+    return ["GSS", "GSS_key_holder", "Manager"]
+        .flatMap(group => employeeData[group] || [])
+        .find(employee => String(employee.id) === String(employeeId));
+}
+
+function mergeEmployeeRows(employeeData, rows) {
+    const importedIds = new Set();
+    rows.forEach((row, index) => {
+        const employeeId = row.employee_id.trim();
+        const name = row.name.trim();
+        if (!employeeId || !name) throw new Error(`Employees CSV row ${index + 2} needs an employee ID and name.`);
+        if (importedIds.has(employeeId)) throw new Error(`Employees CSV contains duplicate ID "${employeeId}".`);
+        importedIds.add(employeeId);
+        const group = normalizeEmployeeGroup(row.job_position);
+        const existing = findEmployeeInData(employeeData, employeeId);
+        const employee = existing || { id: /^\d+$/.test(employeeId) ? Number(employeeId) : employeeId, availability: null, timeOff: [] };
+        employee.name = name;
+        employee.job_position = group;
+        employee.scheduleColor = row.schedule_color.trim() || employee.scheduleColor || "";
+        if (row.profile_image) employee.profile_image = row.profile_image;
+        else {
+            delete employee.profile_image;
+            delete employee.profileImage;
+        }
+        ["GSS", "GSS_key_holder", "Manager"].forEach(key => {
+            employeeData[key] = (employeeData[key] || []).filter(candidate => candidate !== employee);
+        });
+        employeeData[group] = employeeData[group] || [];
+        employeeData[group].push(employee);
+    });
+}
+
+function applyAvailabilityRows(employeeData, rows) {
+    const grouped = new Map();
+    rows.forEach((row, index) => {
+        const employeeId = row.employee_id.trim();
+        const day = row.day.trim().toLowerCase().slice(0, 3);
+        const fullyAvailable = parseBooleanField(row.fully_available.trim(), `Availability CSV row ${index + 2} fully_available`);
+        if (!scheduleDays.some(item => item.key === day)) throw new Error(`Availability CSV row ${index + 2} has an invalid day.`);
+        const employee = findEmployeeInData(employeeData, employeeId);
+        if (!employee) throw new Error(`Availability CSV references unknown employee ID "${employeeId}". Import that employee first.`);
+        const start = row.start_time.trim();
+        const end = row.end_time.trim();
+        if (Boolean(start) !== Boolean(end)
+            || (start && (timeToMinutes(start) === null
+                || timeToMinutes(end) === null
+                || timeToMinutes(start) < 360
+                || timeToMinutes(end) > 1320
+                || timeToMinutes(end) <= timeToMinutes(start)))) {
+            throw new Error(`Availability CSV row ${index + 2} has an invalid time range.`);
+        }
+        const key = `${employeeId}:${day}`;
+        if (!grouped.has(key)) grouped.set(key, { employee, day, entries: [] });
+        grouped.get(key).entries.push({ fullyAvailable, start, end });
+    });
+
+    const changedEmployees = new Set();
+    grouped.forEach(({ employee, day, entries }) => {
+        employee.availability = employee.availability && typeof employee.availability === "object"
+            ? { ...employee.availability }
+            : {};
+        const dayEntries = entries.filter(entry => !entry.fullyAvailable);
+        if (dayEntries.length === 0) {
+            delete employee.availability[day];
+        } else {
+            const ranges = dayEntries.filter(entry => entry.start && entry.end);
+            employee.availability[day] = ranges.length
+                ? Object.fromEntries(ranges.map((range, index) => [`block_${index + 1}`, {
+                    start_time: range.start,
+                    end_time: range.end
+                }]))
+                : { block_1: { start_time: null, end_time: null } };
+        }
+        changedEmployees.add(employee);
+    });
+    changedEmployees.forEach(employee => {
+        if (!Object.keys(employee.availability).length) employee.availability = null;
+    });
+}
+
+function applyTimeOffRows(employeeData, rows) {
+    const byEmployee = new Map();
+    rows.forEach((row, index) => {
+        const employeeId = row.employee_id.trim();
+        const employee = findEmployeeInData(employeeData, employeeId);
+        if (!employee) throw new Error(`Time-off CSV references unknown employee ID "${employeeId}". Import that employee first.`);
+        if (!byEmployee.has(employeeId)) byEmployee.set(employeeId, { employee, periods: [] });
+        const start = row.start_date.trim();
+        const end = row.end_date.trim();
+        if (!start && !end) return;
+        const normalizedStart = parseImportedDate(start);
+        const normalizedEnd = parseImportedDate(end);
+        if (!normalizedStart || !normalizedEnd || !isValidTimeOffRange(normalizedStart, normalizedEnd)) {
+            throw new Error(`Time-off CSV row ${index + 2} has an invalid date range.`);
+        }
+        byEmployee.get(employeeId).periods.push({ start_date: normalizedStart, end_date: normalizedEnd });
+    });
+    byEmployee.forEach(({ employee, periods }) => {
+        employee.timeOff = periods;
+    });
+}
+
+function applyScheduleRows(week, employeeData, rows) {
+    const days = Object.fromEntries(scheduleDays.map(day => [day.key, {}]));
+    const employeeDays = new Set();
+    rows.forEach((row, index) => {
+        const day = row.day.trim().toLowerCase().slice(0, 3);
+        const employeeId = row.employee_id.trim();
+        const start = row.start_time.trim();
+        const end = row.end_time.trim();
+        if (!scheduleDays.some(item => item.key === day)) throw new Error(`Schedule CSV row ${index + 2} has an invalid day.`);
+        if (timeToMinutes(start) === null || timeToMinutes(end) === null
+            || timeToMinutes(start) < 360 || timeToMinutes(end) > 1320
+            || timeToMinutes(end) - timeToMinutes(start) < 180) {
+            throw new Error(`Schedule CSV row ${index + 2} needs a valid shift of at least 3 hours between 6am and 10pm.`);
+        }
+        if (employeeId && !findEmployeeInData(employeeData, employeeId)) {
+            throw new Error(`Schedule CSV references unknown employee ID "${employeeId}". Import that employee first.`);
+        }
+        if (employeeId) {
+            const employeeDay = `${employeeId}:${day}`;
+            if (employeeDays.has(employeeDay)) throw new Error(`Schedule CSV gives employee "${employeeId}" more than one shift on ${day}.`);
+            employeeDays.add(employeeDay);
+        }
+        const shiftKey = `import_${index + 1}`;
+        days[day][shiftKey] = {
+            start_time: start,
+            end_time: end,
+            employee: employeeId ? (/^\d+$/.test(employeeId) ? Number(employeeId) : employeeId) : null
+        };
+    });
+    week.days = days;
+}
+
+function normalizeImportedEmployeeColors(employeeData) {
+    const used = new Set();
+    let reassigned = 0;
+    for (const group of ["GSS", "GSS_key_holder", "Manager"]) {
+        for (const employee of employeeData[group] || []) {
+            const current = employee.scheduleColor;
+            const colorIsAvailable = employeeColors.some(option => option.value === current) && !used.has(current);
+            const assigned = colorIsAvailable ? current : employeeColors.find(option => !used.has(option.value))?.value;
+            if (!assigned) throw new Error("There are more employees than unique schedule colors.");
+            if (assigned !== current) reassigned++;
+            employee.scheduleColor = assigned;
+            used.add(assigned);
+        }
+    }
+    return reassigned;
+}
+
+function commitImportedData(nextEmployees, nextWeeks) {
+    const previousEmployees = localStorage.getItem("employees");
+    const previousWeeks = localStorage.getItem("scheduleWeeks");
+    try {
+        localStorage.setItem("employees", JSON.stringify(nextEmployees));
+        localStorage.setItem("scheduleWeeks", JSON.stringify(nextWeeks));
+    } catch (error) {
+        try {
+            if (previousEmployees === null) localStorage.removeItem("employees");
+            else localStorage.setItem("employees", previousEmployees);
+            if (previousWeeks === null) localStorage.removeItem("scheduleWeeks");
+            else localStorage.setItem("scheduleWeeks", previousWeeks);
+        } catch (restoreError) {
+            console.error("Could not restore local data after failed import.", restoreError);
+        }
+        throw new Error("Could not save imported data locally. Check available browser storage.");
+    }
+    employees = nextEmployees;
+    scheduleWeeks = nextWeeks;
+    selectedShift = null;
+    if (selectedEmployeeId !== null && !getEmployeeById(selectedEmployeeId)) selectedEmployeeId = null;
+    populateEmployeeSidebar();
+    window.dispatchEvent(new CustomEvent("employee-colors-changed"));
+    loadWeek(currentWeekId);
+}
+
+async function importCsvSections(sections) {
+    if (!sections.size) return;
+    if (scheduleLocked && sections.has("schedule")) {
+        throw new Error("Unlock the selected week before importing its schedule.");
+    }
+    const nextEmployees = cloneEmployeeData(employees);
+    const nextWeeks = cloneEmployeeData(scheduleWeeks);
+    if (sections.has("employees")) mergeEmployeeRows(nextEmployees, sections.get("employees"));
+    if (sections.has("availability")) applyAvailabilityRows(nextEmployees, sections.get("availability"));
+    if (sections.has("time_off")) applyTimeOffRows(nextEmployees, sections.get("time_off"));
+    if (sections.has("schedule")) {
+        const selectedWeek = nextWeeks[currentWeekId];
+        if (!selectedWeek || !selectedWeek.days) throw new Error("The selected week is not available.");
+        applyScheduleRows(selectedWeek, nextEmployees, sections.get("schedule"));
+    }
+    const changedAvailabilityIds = new Set([
+        ...(sections.get("availability") || []).map(row => row.employee_id.trim()),
+        ...(sections.get("time_off") || []).map(row => row.employee_id.trim())
+    ]);
+    const recoloredCount = normalizeImportedEmployeeColors(nextEmployees);
+    commitImportedData(nextEmployees, nextWeeks);
+    const conflicts = changedAvailabilityIds.size
+        ? reconcileAvailabilityConflicts(changedAvailabilityIds)
+        : { removed: [], locked: [] };
+    if (conflicts.removed.some(conflict => conflict.weekId === currentWeekId)) {
+        renderScheduleGrid();
+        updateScheduleControls();
+    }
+    const scheduleMessage = sections.has("schedule")
+        ? "The selected week's schedule was updated; other weeks and local-only preferences were left unchanged."
+        : "Existing schedules and local-only preferences were left unchanged.";
+    const importMessage = `Imported ${[...sections.keys()].join(", ")}. ${scheduleMessage}${recoloredCount ? ` ${recoloredCount} employee color(s) were reassigned to keep colors unique.` : ""}`;
+    if (conflicts.removed.length || conflicts.locked.length) {
+        showAvailabilityConflictResult(conflicts, importMessage);
+    } else {
+        showScheduleSuccess(importMessage);
+    }
+}
+
+async function importLegacyJson(text) {
+    const importedData = JSON.parse(text);
+    if (!importedData.employees || !importedData.scheduleWeeks) {
+        throw new Error("The JSON backup does not contain employees and schedule weeks.");
+    }
+    if (scheduleLocked) throw new Error("Unlock the selected week before importing its schedule.");
+
+    const nextEmployees = cloneEmployeeData(employees);
+    const importedEmployees = ["GSS", "GSS_key_holder", "Manager"]
+        .flatMap(group => (importedData.employees[group] || []).map(employee => ({
+            ...employee,
+            job_position: employee.job_position || group
+        })));
+    mergeEmployeeRows(nextEmployees, importedEmployees.map(employee => ({
+        employee_id: String(employee.id ?? ""),
+        name: employee.name || "",
+        job_position: employee.job_position || "",
+        schedule_color: employee.scheduleColor || "",
+        profile_image: employee.profile_image || employee.profileImage || ""
+    })));
+    importedEmployees.forEach(imported => {
+        const existing = findEmployeeInData(nextEmployees, imported.id);
+        if (existing) {
+            existing.availability = imported.availability ?? null;
+            existing.timeOff = Array.isArray(imported.timeOff) ? imported.timeOff : [];
+        }
+    });
+
+    const sourceWeeks = Object.entries(importedData.scheduleWeeks);
+    const currentDate = scheduleWeeks[currentWeekId].date;
+    const sourceWeek = sourceWeeks.find(([, week]) => week.date === currentDate)?.[1] || sourceWeeks[0]?.[1];
+    if (!sourceWeek || !sourceWeek.days) throw new Error("The JSON backup does not contain a valid week schedule.");
+    const nextWeeks = cloneEmployeeData(scheduleWeeks);
+    nextWeeks[currentWeekId].days = cloneEmployeeData(sourceWeek.days);
+    normalizeImportedEmployeeColors(nextEmployees);
+    commitImportedData(nextEmployees, nextWeeks);
+    const importedEmployeeIds = new Set(importedEmployees.map(employee => String(employee.id)));
+    const conflicts = reconcileAvailabilityConflicts(importedEmployeeIds);
+    if (conflicts.removed.some(conflict => conflict.weekId === currentWeekId)) {
+        renderScheduleGrid();
+        updateScheduleControls();
+    }
+    const importMessage = "Imported the JSON backup's employees and schedule into the selected week. Other weeks and local-only preferences were left unchanged.";
+    if (conflicts.removed.length || conflicts.locked.length) {
+        showAvailabilityConflictResult(conflicts, importMessage);
+    } else {
+        showScheduleSuccess(importMessage);
+    }
+}

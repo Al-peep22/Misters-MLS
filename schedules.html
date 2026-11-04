@@ -9,6 +9,7 @@
 
     <!-- JS -->
     <script defer src="./js/schedules.js"></script>
+    <script defer src="./js/addEmployee.js"></script>
 </head>
 
 <body class="schedule-body">
@@ -33,10 +34,10 @@
 
         <div class="schedule-header-right">
             <button id="autoScheduleBtn">Auto Schedule</button>
-            <button id="importScheduleBtn">Import</button>
-            <input type="file" id="importFileInput" accept=".json" hidden>
-            <button id="exportScheduleBtn">Export</button>
-            <button id="addEmployeeBtn" onclick="window.location.href='addEmployee.html'">Add Employee</button>
+            <button id="importScheduleBtn" title="Select one or more exported CSV files. Schedule data imports into the selected week.">Import CSVs</button>
+            <input type="file" id="importFileInput" accept=".csv,text/csv,.json,application/json" multiple hidden>
+            <button id="exportScheduleBtn">Export CSVs</button>
+            <button id="addEmployeeBtn" type="button">Add Employee</button>
             <button id="tutorialBtn" onclick="window.location.href='tutorial.html'">Tutorial</button>
             <button id="logoutBtn">Logout</button>
         </div>
@@ -45,56 +46,286 @@
     <!-- Main Layout -->
     <main class="schedule-main">
 
-        <!-- Left Sidebar: Employees -->
-        <aside class="employee-sidebar">
-            <h2>Employees</h2>
-
-            <div id="employeeList" class="employee-list">
-                <!-- JS will populate employees with remove buttons -->
-            </div>
-
-            <h2>Conflicts</h2>
-            <div id="conflictPanel" class="conflict-panel">
-                <!-- JS will show conflicts here -->
-            </div>
-        </aside>
-
         <!-- Main Schedule Grid -->
         <section class="schedule-grid-container">
 
-            <!-- Day Tabs -->
-            <div class="day-tabs">
-                <button class="day-tab" data-day="sun">Sunday</button>
-                <button class="day-tab" data-day="mon">Monday</button>
-                <button class="day-tab" data-day="tue">Tuesday</button>
-                <button class="day-tab" data-day="wed">Wednesday</button>
-                <button class="day-tab" data-day="thu">Thursday</button>
-                <button class="day-tab" data-day="fri">Friday</button>
-                <button class="day-tab" data-day="sat">Saturday</button>
+            <div class="schedule-month-header" aria-live="polite">
+                <span id="scheduleMonthLeft"></span>
+                <span id="scheduleMonthSingle"></span>
+                <span id="scheduleMonthRight"></span>
             </div>
-
-            <!-- Timeline Grid -->
             <div id="scheduleGrid" class="schedule-grid">
-                <!-- JS will generate the timeline and shifts here -->
+                <!-- JS will render the weekly schedule -->
+            </div>
+            <div class="schedule-error-panel">
+                <p id="scheduleError" class="schedule-error" role="status" aria-live="polite"></p>
+                <button id="openScheduleErrorBtn" class="schedule-error-toggle" type="button" hidden>Open errors</button>
+                <button id="closeScheduleErrorBtn" class="schedule-error-toggle" type="button" hidden>Close errors</button>
             </div>
 
         </section>
 
-        <!-- Right Sidebar: Shift Assignment -->
-        <aside class="assignment-sidebar">
-            <h2>Assign Shift</h2>
+        <div id="scheduleResizeHandle" class="schedule-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize schedule and employee panels" tabindex="0"></div>
 
-            <p id="selectedShiftLabel">No shift selected</p>
+        <section class="schedule-sidebar" aria-label="Employees and shift assignment">
+            <!-- Right Sidebar: Employees -->
+            <aside class="employee-sidebar">
+                <h2>Employees</h2>
 
-            <div id="availableEmployees" class="available-employees">
-                <!-- JS will populate available employees for selected shift -->
-            </div>
+                <div id="employeeList" class="employee-list">
+                    <!-- JS will populate employees with remove buttons -->
+                </div>
 
-            <button id="assignShiftBtn" disabled>Assign Selected Employee</button>
-            <button id="removeShiftBtn" disabled>Remove Shift</button>
-        </aside>
+            </aside>
+
+            <!-- Shift Assignment -->
+            <aside class="assignment-sidebar">
+                <h2>Schedule</h2>
+
+                <p id="selectedEmployeeLabel">Select an employee by clicking their name.</p>
+
+                <div class="schedule-legend">
+                    <p><span class="schedule-legend-swatch available"></span>Available time</p>
+                    <p><span class="schedule-legend-swatch unavailable"></span>Unavailable time</p>
+                    <p><span class="schedule-legend-swatch assigned"></span>Scheduled shift</p>
+                </div>
+
+                <p class="schedule-help">Select an employee, then click an available time to create a shift of up to 8 hours, stopping at unavailable time. Shifts must be at least 3 hours. Select a shift to use the controls at its ends.</p>
+                <button id="removeShiftBtn" disabled>Remove Selected Shift</button>
+            </aside>
+        </section>
 
     </main>
+
+    <dialog id="scheduleExportDialog" class="employee-dialog edit-employee-dialog" aria-labelledby="scheduleExportTitle">
+        <div class="employee-dialog-content">
+            <h2 id="scheduleExportTitle">Export schedule data</h2>
+            <p>Download each CSV file you need. The schedule CSV contains the currently selected week and can be imported into any selected week. Preferences stay saved locally and are not exported.</p>
+            <p>Each file includes a title, editing notes, and a column guide. Keep the column header row; guide rows are ignored during import. Edit or add data rows, save as CSV, then import the file. Employee IDs connect the employee, availability, time-off, and schedule files; when adding an employee, import the employee file together with any related availability or time-off files. For a schedule import, unlock the selected week first.</p>
+            <p>Use job titles <code>GSS</code>, <code>GSS_key_holder</code>, or <code>Manager</code>; days <code>sun</code> through <code>sat</code>; times in 24-hour <code>HH:MM</code> format; and time-off dates in <code>YYYY-MM-DD</code>.</p>
+            <div id="scheduleExportLinks" class="schedule-export-links"></div>
+            <div class="employee-dialog-actions">
+                <button id="closeScheduleExportBtn" type="button">Close</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="createEmployeeDialog" class="employee-dialog create-employee-dialog" aria-labelledby="createEmployeeTitle">
+        <main class="employee-form-container">
+            <div class="create-employee-heading">
+                <h1 id="createEmployeeTitle">Create Employee</h1>
+                <button id="closeCreateEmployeeBtn" type="button" aria-label="Close create employee form">Close</button>
+            </div>
+
+            <form id="employeeForm">
+                <label for="profileImage">Profile Picture (optional URL)</label>
+                <input id="profileImage" name="profileImage" type="text" placeholder="https://example.com/employee.png">
+                <label for="profileImageFile">Or choose an image from this device</label>
+                <input id="profileImageFile" name="profileImageFile" type="file" accept="image/*">
+                <p id="profileImageError" class="schedule-error" role="status"></p>
+
+                <label for="employeeName">Name</label>
+                <input id="employeeName" name="employeeName" type="text" required>
+
+                <p>Job Position:</p>
+                <div class="job-position-buttons">
+                    <button type="button" data-position="GSS">GSS</button>
+                    <button type="button" data-position="GSS_key_holder">GSS-Key Holder</button>
+                    <button type="button" data-position="Manager">Manager</button>
+                </div>
+                <input id="jobPosition" name="jobPosition" type="hidden" required>
+                <label for="employeeColor">Schedule Color</label>
+                <select id="employeeColor" name="employeeColor">
+                    <option value="random">Random color</option>
+                </select>
+
+                <p class="employeeFormAvailabilityTxt">Fully Available</p>
+                <p class="employee-form-availability-help">Employees are fully available by default. Show availability and click time blocks to mark times they cannot work.</p>
+                <button type="button" id="adjustAvailabilityBtn">Show Availability</button>
+
+                <section id="availabilitySection" class="availability-grid" hidden>
+                    <h3>Weekly Availability</h3>
+                    <table id="availabilityTable">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th data-day="sun">Sun</th>
+                                <th data-day="mon">Mon</th>
+                                <th data-day="tue">Tue</th>
+                                <th data-day="wed">Wed</th>
+                                <th data-day="thu">Thu</th>
+                                <th data-day="fri">Fri</th>
+                                <th data-day="sat">Sat</th>
+                            </tr>
+                        </thead>
+                        <tbody id="availabilityBody"></tbody>
+                    </table>
+                </section>
+
+                <p>Time Off</p>
+                <p class="employeeFormTimeOff">n/a</p>
+                <button type="button" id="addTimeOffBtn">Add Time Off</button>
+
+                <section id="timeOffForm" class="timeOffForm" hidden>
+                    <p>Days Unavailable</p>
+                    <div>
+                        <label for="timeOffStart">Start Date</label>
+                        <input id="timeOffStart" class="employeeFormTimeOffStartDate" type="date">
+                        <label for="timeOffEnd">End Date</label>
+                        <input id="timeOffEnd" class="employeeFormTimeOffEndDate" type="date">
+                    </div>
+                    <div>
+                        <button type="button" id="cancelTimeOffBtn">Cancel</button>
+                        <button type="button" id="submitTimeOffBtn">Submit</button>
+                    </div>
+                </section>
+
+                <p id="createEmployeeError" class="schedule-error" role="status"></p>
+                <button type="submit">Create Employee</button>
+            </form>
+        </main>
+    </dialog>
+
+    <dialog id="employeeDetailsDialog" class="employee-dialog" aria-labelledby="detailsEmployeeName">
+        <div class="employee-dialog-content">
+            <div class="employee-dialog-header">
+                <button id="editProfileImageBtn" class="employee-profile-edit-button" type="button" aria-label="Edit profile picture">
+                    <span class="employee-avatar employee-dialog-avatar">
+                        <img id="detailsProfileImage" alt="">
+                        <span id="detailsAvatarFallback" aria-hidden="true"></span>
+                    </span>
+                    <span class="employee-profile-camera" aria-hidden="true">✎</span>
+                </button>
+                <div>
+                    <h2 id="detailsEmployeeName"></h2>
+                    <p id="detailsJobPosition"></p>
+                </div>
+                <button id="editEmployeeInfoBtn" class="employee-pencil-button" type="button" aria-label="Edit employee name or title" title="Edit name or title">✎</button>
+            </div>
+
+            <dl class="employee-details">
+                <div>
+                    <dt>Employee ID</dt>
+                    <dd id="detailsEmployeeId"></dd>
+                </div>
+                <div>
+                    <dt>Weekly Availability</dt>
+                    <dd>
+                        <ul id="detailsAvailability"></ul>
+                        <button id="editAvailabilityBtn" type="button">Edit Availability</button>
+                        <section id="availabilityEditSection" class="availability-grid employee-availability-editor" hidden>
+                            <h3>Weekly Availability</h3>
+                            <p class="employee-form-availability-help">Click time blocks to mark when this employee is available. Click a day heading to toggle the whole day.</p>
+                            <div class="availability-table-scroll">
+                                <table id="employeeAvailabilityTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th data-day="sun">Sun</th>
+                                            <th data-day="mon">Mon</th>
+                                            <th data-day="tue">Tue</th>
+                                            <th data-day="wed">Wed</th>
+                                            <th data-day="thu">Thu</th>
+                                            <th data-day="fri">Fri</th>
+                                            <th data-day="sat">Sat</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="employeeAvailabilityBody"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </dd>
+                </div>
+                <div>
+                    <dt>Time Off</dt>
+                    <dd>
+                        <ul id="detailsTimeOff"></ul>
+                        <button id="editTimeOffBtn" type="button">Edit Time Off</button>
+                        <section id="timeOffEditSection" class="time-off-editor" hidden>
+                            <div id="timeOffEditList" class="time-off-edit-list"></div>
+                            <button id="addEmployeeTimeOffBtn" type="button">Add Days Off</button>
+                            <div id="employeeTimeOffForm" class="time-off-add-form" hidden>
+                                <label for="employeeTimeOffStart">Start Date</label>
+                                <input id="employeeTimeOffStart" type="date">
+                                <label for="employeeTimeOffEnd">End Date</label>
+                                <input id="employeeTimeOffEnd" type="date">
+                                <button id="saveNewEmployeeTimeOffBtn" type="button">Add</button>
+                            </div>
+                            <p id="timeOffEditError" class="schedule-error" role="status"></p>
+                        </section>
+                    </dd>
+                </div>
+            </dl>
+
+            <div class="employee-dialog-actions">
+                <button id="deleteEmployeeBtn" class="delete-employee-button" type="button">Delete Employee</button>
+                <button id="closeEmployeeDetailsBtn" type="button">Close</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="editProfileImageDialog" class="employee-dialog edit-employee-dialog" aria-labelledby="editProfileImageTitle">
+        <div class="employee-dialog-content">
+            <h2 id="editProfileImageTitle">Update Profile Picture</h2>
+            <label for="updatedProfileImageUrl">Image URL</label>
+            <input id="updatedProfileImageUrl" type="text" placeholder="https://example.com/employee.png">
+            <label for="updatedProfileImageFile">Or choose an image from this device</label>
+            <input id="updatedProfileImageFile" type="file" accept="image/*">
+            <p id="profileImageEditError" class="schedule-error" role="status"></p>
+            <div class="employee-dialog-actions">
+                <button id="saveProfileImageBtn" type="button">Save Picture</button>
+                <button id="cancelProfileImageBtn" type="button">Cancel</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="editEmployeeInfoDialog" class="employee-dialog edit-employee-dialog" aria-labelledby="editEmployeeInfoTitle">
+        <div class="employee-dialog-content">
+            <h2 id="editEmployeeInfoTitle">Edit Employee</h2>
+            <label for="updatedEmployeeName">Name</label>
+            <input id="updatedEmployeeName" type="text" required>
+            <label for="updatedEmployeePosition">Job Position</label>
+            <select id="updatedEmployeePosition">
+                <option value="GSS">GSS</option>
+                <option value="GSS_key_holder">GSS-Key Holder</option>
+                <option value="Manager">Manager</option>
+            </select>
+            <label for="updatedEmployeeColor">Schedule Color</label>
+            <select id="updatedEmployeeColor"></select>
+            <p id="employeeInfoEditError" class="schedule-error" role="status"></p>
+            <div class="employee-dialog-actions">
+                <button id="saveEmployeeInfoBtn" type="button">Save Changes</button>
+                <button id="cancelEmployeeInfoBtn" type="button">Cancel</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="editTimeOffDialog" class="employee-dialog" aria-labelledby="editTimeOffTitle">
+        <div class="employee-dialog-content">
+            <h2 id="editTimeOffTitle">Update Days Off</h2>
+            <label for="editTimeOffStart">Start Date</label>
+            <input id="editTimeOffStart" type="date">
+            <label for="editTimeOffEnd">End Date</label>
+            <input id="editTimeOffEnd" type="date">
+            <p id="editTimeOffError" class="schedule-error" role="status"></p>
+            <div class="employee-dialog-actions">
+                <button id="deleteEditedTimeOffBtn" class="delete-employee-button" type="button">Delete</button>
+                <button id="saveEditedTimeOffBtn" type="button">Save</button>
+                <button id="cancelEditedTimeOffBtn" type="button">Cancel</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="deleteEmployeeDialog" class="employee-dialog" aria-labelledby="deleteEmployeeTitle">
+        <div class="employee-dialog-content">
+            <h2 id="deleteEmployeeTitle">Delete employee?</h2>
+            <p id="deleteEmployeeMessage"></p>
+            <div class="employee-dialog-actions">
+                <button id="cancelEmployeeDeleteBtn" type="button">Cancel</button>
+                <button id="confirmEmployeeDeleteBtn" class="delete-employee-button" type="button">Delete Employee</button>
+            </div>
+        </div>
+    </dialog>
 
     <!-- Footer -->
     <footer>

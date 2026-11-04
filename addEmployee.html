@@ -12,8 +12,11 @@
 
         <form id="employeeForm">
             <!-- Picture -->
-            <label for="profileImage">Profile Picture (URL or path)</label>
-            <input id="profileImage" name="profileImage" type="text" placeholder="./images/employee.png">
+            <label for="profileImage">Profile Picture (optional URL)</label>
+            <input id="profileImage" name="profileImage" type="text" placeholder="https://example.com/employee.png">
+            <label for="profileImageFile">Or choose an image from this device</label>
+            <input id="profileImageFile" name="profileImageFile" type="file" accept="image/*">
+            <p id="profileImageError" class="schedule-error" role="status"></p>
 
             <!-- Name -->
             <label for="employeeName">Name</label>
@@ -27,9 +30,14 @@
                 <button type="button" data-position="Manager">Manager</button>
             </div>
             <input id="jobPosition" name="jobPosition" type="hidden" required>
+            <label for="employeeColor">Schedule Color</label>
+            <select id="employeeColor" name="employeeColor">
+                <option value="random">Random available color</option>
+            </select>
 
             <!-- Availability -->
             <p class="employeeFormAvailabilityTxt">Fully Available</p>
+            <p class="employee-form-availability-help">Employees are fully available by default. Show availability and click time blocks to mark times they cannot work.</p>
             <button type="button" id="adjustAvailabilityBtn">Show Availability</button>
 
             <section id="availabilitySection" class="availability-grid" hidden>
@@ -76,6 +84,7 @@
             </section>
 
             <button type="submit">Create Employee</button>
+            <p id="createEmployeeError" class="schedule-error" role="status"></p>
         </form>
     </main>
 
