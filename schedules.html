@@ -12,20 +12,21 @@
     <script defer src="./js/addEmployee.js"></script>
 </head>
 
-<body class="schedule-body">
+<body class="schedule-body" data-theme="light">
 
     <!-- Top Navigation Bar -->
     <header class="schedule-header">
         <div class="schedule-header-left">
-            <h1>Misters Limitless Schedules</h1>
+            <img id="scheduleLogo" class="schedule-logo" src="./images/Logo_Light.png" alt="Misters Limitless Schedules logo">
+            <h1 class="schedule-title"><span>Misters</span><span>Limitless</span><span>Schedules</span></h1>
+        </div>
 
-            <!-- Week Selector -->
+        <div class="schedule-header-center">
             <div class="week-selector">
                 <label for="weekSelect">Week:</label>
                 <select id="weekSelect"></select>
             </div>
 
-            <!-- Lock Toggle -->
             <div class="lock-toggle">
                 <label for="lockCheckbox">Locked:</label>
                 <input type="checkbox" id="lockCheckbox">
@@ -33,10 +34,11 @@
         </div>
 
         <div class="schedule-header-right">
-            <button id="autoScheduleBtn">Auto Schedule</button>
-            <button id="importScheduleBtn" title="Select one or more exported CSV files. Schedule data imports into the selected week.">Import CSVs</button>
-            <input type="file" id="importFileInput" accept=".csv,text/csv,.json,application/json" multiple hidden>
-            <button id="exportScheduleBtn">Export CSVs</button>
+            <button id="themeToggleBtn" type="button" aria-pressed="false">Dark mode</button>
+            <button id="autoScheduleBtn">Auto-Schedule</button>
+            <button id="importScheduleBtn" title="Import one complete JSON backup into the currently selected week.">Import JSON</button>
+            <input type="file" id="importFileInput" accept=".json,application/json" hidden>
+            <button id="exportScheduleBtn">Export JSON</button>
             <button id="addEmployeeBtn" type="button">Add Employee</button>
             <button id="tutorialBtn" onclick="window.location.href='tutorial.html'">Tutorial</button>
             <button id="logoutBtn">Logout</button>
@@ -83,6 +85,7 @@
                 <h2>Schedule</h2>
 
                 <p id="selectedEmployeeLabel">Select an employee by clicking their name.</p>
+                <div id="selectedShiftDetails" class="selected-shift-details" aria-live="polite" hidden></div>
 
                 <div class="schedule-legend">
                     <p><span class="schedule-legend-swatch available"></span>Available time</p>
@@ -99,15 +102,43 @@
 
     <dialog id="scheduleExportDialog" class="employee-dialog edit-employee-dialog" aria-labelledby="scheduleExportTitle">
         <div class="employee-dialog-content">
-            <h2 id="scheduleExportTitle">Export schedule data</h2>
-            <p>Download each CSV file you need. The schedule CSV contains the currently selected week and can be imported into any selected week. Preferences stay saved locally and are not exported.</p>
-            <p>Each file includes a title, editing notes, and a column guide. Keep the column header row; guide rows are ignored during import. Edit or add data rows, save as CSV, then import the file. Employee IDs connect the employee, availability, time-off, and schedule files; when adding an employee, import the employee file together with any related availability or time-off files. For a schedule import, unlock the selected week first.</p>
-            <p>Use job titles <code>GSS</code>, <code>GSS_key_holder</code>, or <code>Manager</code>; days <code>sun</code> through <code>sat</code>; times in 24-hour <code>HH:MM</code> format; and time-off dates in <code>YYYY-MM-DD</code>.</p>
+            <h2 id="scheduleExportTitle">Export JSON backup</h2>
+            <p>Download one JSON backup containing employees, availability, time off, and shifts for the currently selected week. Import merges employees by ID and replaces the currently selected week's schedule; other weeks and local-only preferences are left unchanged. Unlock the selected week before importing.</p>
+            <p>The backup includes employee details, availability, time off, and schedule data. To remove an employee or clear information, make that change in the app before exporting. Preferences remain saved locally and are not included in the backup.</p>
             <div id="scheduleExportLinks" class="schedule-export-links"></div>
             <div class="employee-dialog-actions">
                 <button id="closeScheduleExportBtn" type="button">Close</button>
             </div>
         </div>
+    </dialog>
+
+    <dialog id="autoScheduleDialog" class="employee-dialog auto-schedule-dialog" aria-labelledby="autoScheduleTitle">
+        <form id="autoScheduleForm" class="employee-dialog-content auto-schedule-form">
+            <h2 id="autoScheduleTitle">Auto-Schedule This Week</h2>
+            <p>Set employee hour limits and choose who and which days to schedule. Checked days will be regenerated; unchecked days stay unchanged. Shifts on unchanged days count toward weekly limits.</p>
+
+            <div class="auto-schedule-limits">
+                <label for="autoScheduleWeeklyMax">Maximum hours per employee this week</label>
+                <input id="autoScheduleWeeklyMax" name="weeklyMax" type="number" min="0" max="168" step="1" value="40" required>
+                <label for="autoScheduleDailyMax">Maximum hours per employee per day</label>
+                <input id="autoScheduleDailyMax" name="dailyMax" type="number" min="3" max="16" step="1" value="12" required>
+            </div>
+
+            <fieldset class="auto-schedule-options">
+                <legend>Employees to include</legend>
+                <div id="autoScheduleEmployees" class="auto-schedule-checkbox-grid"></div>
+            </fieldset>
+
+            <fieldset class="auto-schedule-options">
+                <legend>Days to schedule</legend>
+                <div id="autoScheduleDays" class="auto-schedule-checkbox-grid auto-schedule-day-grid"></div>
+            </fieldset>
+
+            <div class="employee-dialog-actions">
+                <button id="cancelAutoScheduleBtn" type="button">Cancel</button>
+                <button type="submit">Make Schedule</button>
+            </div>
+        </form>
     </dialog>
 
     <dialog id="createEmployeeDialog" class="employee-dialog create-employee-dialog" aria-labelledby="createEmployeeTitle">

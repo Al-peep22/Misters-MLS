@@ -24,6 +24,12 @@ let timeOffDraft = [];
 let editingTimeOffIndex = null;
 let pendingProfileImage = "";
 let profileImageRead = Promise.resolve();
+const undoHistoryLimit = 50;
+let undoHistory = [];
+let redoHistory = [];
+let undoHistoryReady = false;
+let undoHistoryUpdateQueued = false;
+let restoringUndoState = false;
 const schedulePreferencesKey = "schedulePreferences";
 const scheduleDays = [
     { key: "sun", label: "Sunday" },
@@ -70,6 +76,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
     }
 
+    applyScheduleTheme(getSchedulePreferences().theme);
+
     // Load JSON files
     scheduleWeeks = JSON.parse(localStorage.getItem("scheduleWeeks") || "null")
         || await loadJSON("./json/scheduleWeeks.json");
@@ -102,6 +110,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("weekSelect").disabled = false;
     document.getElementById("weekSelect").value = firstWeek;
     loadWeek(firstWeek);
+    initializeUndoHistory();
+});
+
+function applyScheduleTheme(theme) {
+    const activeTheme = theme === "dark" ? "dark" : "light";
+    document.body.dataset.theme = activeTheme;
+    const isDark = activeTheme === "dark";
+    const logo = document.getElementById("scheduleLogo");
+    const toggle = document.getElementById("themeToggleBtn");
+    if (logo) logo.src = isDark ? "./images/Logo_Dark.png" : "./images/Logo_Light.png";
+    if (toggle) {
+        toggle.textContent = isDark ? "Light mode" : "Dark mode";
+        toggle.setAttribute("aria-label", `Switch to ${isDark ? "light" : "dark"} mode`);
+        toggle.setAttribute("aria-pressed", String(isDark));
+    }
+}
+
+document.getElementById("themeToggleBtn").addEventListener("click", () => {
+    const nextTheme = document.body.dataset.theme === "dark" ? "light" : "dark";
+    applyScheduleTheme(nextTheme);
+    saveSchedulePreferences({ theme: nextTheme });
 });
 
 
@@ -218,6 +247,21 @@ function getScheduleDateForDay(weekId, day) {
     if (!date || dayOffset < 0) return null;
     date.setDate(date.getDate() + dayOffset);
     return dateToScheduleKey(date);
+}
+
+function getAutoScheduleBoundaries(weekId, day) {
+    const scheduleDate = getScheduleDateForDay(weekId, day);
+    if (!scheduleDate) throw new Error(`Could not determine the schedule date for ${getDayLabel(day)}.`);
+    const monthAndDay = scheduleDate.slice(5);
+    const shortHoursSeason = monthAndDay >= "11-01" || monthAndDay <= "03-14";
+    const openingTime = day === "sun" ? "07:00" : "06:00";
+    const closingTime = shortHoursSeason ? "21:00" : "22:00";
+    return {
+        openingTime,
+        closingTime,
+        openingIndex: (timeToMinutes(openingTime) - 360) / 60,
+        closingIndex: (timeToMinutes(closingTime) - 360) / 60
+    };
 }
 
 function dateToScheduleKey(date) {
@@ -341,6 +385,11 @@ function renderScheduleGrid() {
         header.textContent = scheduleDate
             ? `${day.label} ${getOrdinalDay(scheduleDate.getDate())}`
             : day.label;
+        header.title = "Right-click to remove all shifts for this day";
+        header.addEventListener("contextmenu", event => {
+            event.preventDefault();
+            removeDayShifts(day.key);
+        });
         if (availabilityEmployeeId !== null && availabilityEmployeeId !== undefined
             && scheduleTimes.every(time =>
                 !isEmployeeAvailableAt(availabilityEmployeeId, day.key, time).available
@@ -624,28 +673,25 @@ function validateWeekSchedule(weekId) {
                 })}.`);
             }
         });
-        const openingEmployees = shifts.filter(shift => {
-            const start = timeToMinutes(shift.startTime);
-            return start !== null && start >= 360 && start <= 420;
-        });
-        const closingEmployees = shifts.filter(shift => {
-            const end = timeToMinutes(shift.endTime);
-            return end !== null && end >= 1260 && end <= 1320;
-        });
+        const { openingTime, closingTime } = getAutoScheduleBoundaries(weekId, day.key);
+        const openingEmployees = shifts.filter(shift => shift.startTime === openingTime);
+        const closingEmployees = shifts.filter(shift => shift.endTime === closingTime);
         const openingCount = new Set(openingEmployees.map(shift => String(shift.employee.id))).size;
         const closingCount = new Set(closingEmployees.map(shift => String(shift.employee.id))).size;
 
         if (openingCount < 2) {
-            issues.push(`${day.label}: needs 2 openers starting between 6am and 7am (currently ${openingCount}).`);
+            issues.push(`${day.label}: needs 2 openers starting at ${formatScheduleTime(openingTime)} (currently ${openingCount}).`);
         }
         if (closingCount < 3) {
-            issues.push(`${day.label}: needs 3 closers ending between 9pm and 10pm (currently ${closingCount}).`);
+            issues.push(`${day.label}: needs 3 closers ending at ${formatScheduleTime(closingTime)} (currently ${closingCount}).`);
         }
 
         const managerlessKeyHolderHours = [];
         const managerlessUncoveredHours = [];
         const understaffedHours = [];
+        const { openingIndex, closingIndex } = getAutoScheduleBoundaries(weekId, day.key);
         scheduleTimes.forEach((time, index) => {
+            if (index < openingIndex || index >= closingIndex) return;
             const working = shifts.filter(shift => index >= shift.startIndex && index < shift.endIndex);
             if (new Set(working.map(shift => String(shift.employee.id))).size < 2) {
                 understaffedHours.push(time);
@@ -758,6 +804,23 @@ function removeSelectedShift() {
     updateScheduleControls();
 }
 
+function removeDayShifts(day) {
+    if (scheduleLocked) {
+        showScheduleError("Unlock this schedule before removing shifts.");
+        return;
+    }
+    const shifts = scheduleWeeks[currentWeekId]?.days?.[day];
+    if (!shifts || !Object.keys(shifts).length) return;
+
+    const removedCount = Object.keys(shifts).length;
+    scheduleWeeks[currentWeekId].days[day] = {};
+    if (selectedShift?.day === day) selectedShift = null;
+    persistSchedule();
+    renderScheduleGrid();
+    updateScheduleControls();
+    showScheduleSuccess(`Removed ${removedCount} shift${removedCount === 1 ? "" : "s"} for ${getDayLabel(day)}.`);
+}
+
 function resizeSelectedShift(mode) {
     if (!selectedShift || scheduleLocked) return;
     const shiftInfo = scheduleWeeks[currentWeekId].days[selectedShift.day][selectedShift.shiftKey];
@@ -827,6 +890,33 @@ function updateScheduleControls() {
     document.getElementById("selectedEmployeeLabel").textContent = employee
         ? `Selected: ${employee.name || "Unnamed employee"}`
         : "Select an employee by clicking their name.";
+    const shiftDetails = document.getElementById("selectedShiftDetails");
+    const selectedDay = selectedShift && scheduleWeeks[currentWeekId]?.days?.[selectedShift.day];
+    const shiftInfo = selectedDay?.[selectedShift.shiftKey];
+    const shift = shiftInfo && (shiftInfo.start_time && shiftInfo.end_time
+        ? shiftInfo
+        : defaultShifts[shiftInfo.shift]);
+    const startMinutes = shift && timeToMinutes(shift.start_time);
+    const endMinutes = shift && timeToMinutes(shift.end_time);
+    const shiftEmployee = shiftInfo && getEmployeeById(getShiftEmployeeId(shiftInfo));
+    if (selectedShift && shiftEmployee && startMinutes !== null && endMinutes !== null && endMinutes > startMinutes) {
+        const duration = (endMinutes - startMinutes) / 60;
+        const durationLabel = Number.isInteger(duration) ? `${duration} hours` : `${duration.toFixed(1)} hours`;
+        shiftDetails.replaceChildren();
+        [
+            `Shift: ${shiftEmployee.name || "Unnamed employee"}`,
+            `Hours: ${formatScheduleTime(shift.start_time)}-${formatScheduleTime(shift.end_time)}`,
+            `Duration: ${durationLabel}`
+        ].forEach(text => {
+            const line = document.createElement("span");
+            line.textContent = text;
+            shiftDetails.appendChild(line);
+        });
+        shiftDetails.hidden = false;
+    } else {
+        shiftDetails.replaceChildren();
+        shiftDetails.hidden = true;
+    }
     document.getElementById("removeShiftBtn").disabled = !selectedShift || scheduleLocked;
 }
 
@@ -879,6 +969,7 @@ function setupScheduleResizeHandle() {
 
 function persistSchedule() {
     localStorage.setItem("scheduleWeeks", JSON.stringify(scheduleWeeks));
+    recordUndoHistory();
 }
 
 function showScheduleError(message) {
@@ -935,10 +1026,108 @@ document.getElementById("closeScheduleErrorBtn").addEventListener("click", () =>
 
 document.getElementById("removeShiftBtn").addEventListener("click", removeSelectedShift);
 
+function getUndoSnapshot() {
+    return {
+        employees: localStorage.getItem("employees") || JSON.stringify(employees),
+        scheduleWeeks: localStorage.getItem("scheduleWeeks") || JSON.stringify(scheduleWeeks)
+    };
+}
+
+function initializeUndoHistory() {
+    undoHistory = [getUndoSnapshot()];
+    redoHistory = [];
+    undoHistoryReady = true;
+}
+
+function recordUndoHistory() {
+    if (!undoHistoryReady || restoringUndoState || undoHistoryUpdateQueued) return;
+    undoHistoryUpdateQueued = true;
+    queueMicrotask(() => {
+        undoHistoryUpdateQueued = false;
+        if (!undoHistoryReady || restoringUndoState) return;
+        const snapshot = getUndoSnapshot();
+        const previous = undoHistory[undoHistory.length - 1];
+        if (previous
+            && previous.employees === snapshot.employees
+            && previous.scheduleWeeks === snapshot.scheduleWeeks) return;
+        undoHistory.push(snapshot);
+        if (undoHistory.length > undoHistoryLimit) undoHistory.shift();
+        redoHistory = [];
+    });
+}
+
+function restoreUndoSnapshot(snapshot) {
+    const previousEmployees = localStorage.getItem("employees");
+    const previousWeeks = localStorage.getItem("scheduleWeeks");
+    try {
+        localStorage.setItem("employees", snapshot.employees);
+        localStorage.setItem("scheduleWeeks", snapshot.scheduleWeeks);
+    } catch (error) {
+        try {
+            if (previousEmployees === null) localStorage.removeItem("employees");
+            else localStorage.setItem("employees", previousEmployees);
+            if (previousWeeks === null) localStorage.removeItem("scheduleWeeks");
+            else localStorage.setItem("scheduleWeeks", previousWeeks);
+        } catch (restoreError) {
+            console.error("Could not restore local data after failed undo or redo.", restoreError);
+        }
+        showScheduleError("Could not restore the previous local changes. Check available browser storage.");
+        console.error("Could not restore the schedule history.", error);
+        return false;
+    }
+
+    restoringUndoState = true;
+    try {
+        employees = JSON.parse(snapshot.employees);
+        scheduleWeeks = JSON.parse(snapshot.scheduleWeeks);
+        selectedShift = null;
+        if (selectedEmployeeId !== null && !getEmployeeById(selectedEmployeeId)) {
+            selectedEmployeeId = null;
+        }
+        populateEmployeeSidebar();
+        window.dispatchEvent(new CustomEvent("employee-colors-changed"));
+        loadWeek(currentWeekId);
+        clearScheduleError();
+    } finally {
+        restoringUndoState = false;
+    }
+    return true;
+}
+
+function undoScheduleChange() {
+    if (undoHistory.length < 2) return;
+    const previous = undoHistory[undoHistory.length - 2];
+    const current = undoHistory[undoHistory.length - 1];
+    if (!restoreUndoSnapshot(previous)) return;
+    undoHistory.pop();
+    redoHistory.push(current);
+}
+
+function redoScheduleChange() {
+    if (!redoHistory.length) return;
+    const next = redoHistory[redoHistory.length - 1];
+    if (!restoreUndoSnapshot(next)) return;
+    redoHistory.pop();
+    undoHistory.push(next);
+    if (undoHistory.length > undoHistoryLimit) undoHistory.shift();
+}
+
 document.addEventListener("keydown", event => {
     const target = event.target;
     if (target instanceof Element
         && (target.closest("input, textarea, select, [contenteditable='true'], dialog[open]"))) {
+        return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoScheduleChange();
+        else undoScheduleChange();
+        return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redoScheduleChange();
         return;
     }
 
@@ -974,6 +1163,7 @@ document.getElementById("createEmployeeDialog").addEventListener("click", event 
 
 window.addEventListener("employee-created", () => {
     employees = JSON.parse(localStorage.getItem("employees") || "{}");
+    recordUndoHistory();
     populateEmployeeSidebar();
     document.getElementById("createEmployeeDialog").close();
     document.getElementById("createEmployeeError").textContent = "";
@@ -1557,6 +1747,7 @@ function availabilityBlocksFromIndexes(indexes) {
 
 function persistEmployees() {
     localStorage.setItem("employees", JSON.stringify(employees));
+    recordUndoHistory();
 }
 
 function renderTimeOffDraft() {
@@ -1978,12 +2169,285 @@ document.getElementById("lockCheckbox").addEventListener("change", (e) => {
 
 
 // ===============================
-// AUTO SCHEDULE (placeholder)
+// AUTO SCHEDULE
 // ===============================
 
 document.getElementById("autoScheduleBtn").addEventListener("click", () => {
-    alert("Auto-schedule coming soon!");
+    if (scheduleLocked) {
+        showScheduleError("Unlock this schedule before creating an auto-schedule.");
+        return;
+    }
+    populateAutoScheduleOptions();
+    document.getElementById("autoScheduleDialog").showModal();
 });
+
+document.getElementById("cancelAutoScheduleBtn").addEventListener("click", () => {
+    document.getElementById("autoScheduleDialog").close();
+});
+
+document.getElementById("autoScheduleDialog").addEventListener("click", event => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+document.getElementById("autoScheduleForm").addEventListener("submit", event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!form.reportValidity()) return;
+    try {
+        createAutoSchedule();
+        document.getElementById("autoScheduleDialog").close();
+    } catch (error) {
+        showScheduleError(`Auto-schedule failed: ${error.message}`);
+        console.error("Could not create an auto-schedule.", error);
+    }
+});
+
+function populateAutoScheduleOptions() {
+    const employeeOptions = document.getElementById("autoScheduleEmployees");
+    employeeOptions.replaceChildren();
+    getAllEmployees().forEach((employee, index) => {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.dataset.employeeId = String(employee.id);
+        checkbox.id = `autoScheduleEmployee${index}`;
+        const name = document.createElement("span");
+        name.textContent = `${employee.name || "Unnamed employee"} (${getEmployeePosition(employee)})`;
+        label.htmlFor = checkbox.id;
+        label.append(checkbox, name);
+        employeeOptions.appendChild(label);
+    });
+
+    const dayOptions = document.getElementById("autoScheduleDays");
+    dayOptions.replaceChildren();
+    scheduleDays.forEach((day, index) => {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.dataset.day = day.key;
+        checkbox.id = `autoScheduleDay${index}`;
+        const name = document.createElement("span");
+        name.textContent = day.label;
+        label.htmlFor = checkbox.id;
+        label.append(checkbox, name);
+        dayOptions.appendChild(label);
+    });
+}
+
+function getAutoScheduleGaps(shifts, day, weekId) {
+    let understaffedHours = 0;
+    let uncoveredRoleHours = 0;
+    let managerlessKeyHolderHours = 0;
+    const { openingIndex, closingIndex } = getAutoScheduleBoundaries(weekId, day);
+    scheduleTimes.forEach((time, index) => {
+        if (index < openingIndex || index >= closingIndex) return;
+        const working = shifts.filter(shift => index >= shift.startIndex && index < shift.endIndex);
+        const employeeIds = new Set(working.map(shift => String(shift.employee.id)));
+        if (employeeIds.size < 2) understaffedHours++;
+        if (!working.some(shift => getEmployeePosition(shift.employee) === "Manager")) {
+            if (working.some(shift => getEmployeePosition(shift.employee) === "GSS_key_holder")) {
+                managerlessKeyHolderHours++;
+            } else {
+                uncoveredRoleHours++;
+            }
+        }
+    });
+    const openerIds = new Set(shifts
+        .filter(shift => shift.startIndex === openingIndex)
+        .map(shift => String(shift.employee.id)));
+    const closerIds = new Set(shifts
+        .filter(shift => shift.endIndex === closingIndex)
+        .map(shift => String(shift.employee.id)));
+    const middleIds = new Set(shifts
+        .filter(shift => shift.startIndex !== openingIndex && shift.endIndex !== closingIndex)
+        .map(shift => String(shift.employee.id)));
+    const employeeIds = new Set(shifts.map(shift => String(shift.employee.id)));
+    const missingOpeners = Math.max(0, 2 - openerIds.size);
+    const excessOpeners = Math.max(0, openerIds.size - 2);
+    const missingClosers = Math.max(0, 3 - closerIds.size);
+    const excessClosers = Math.max(0, closerIds.size - 4);
+    const excessMiddleShifts = Math.max(0, middleIds.size - 1);
+    const missingEmployees = Math.max(0, 5 - employeeIds.size);
+    const excessEmployees = Math.max(0, employeeIds.size - 7);
+    const excessManagerlessKeyHolderHours = Math.max(0, managerlessKeyHolderHours - 3);
+    return {
+        understaffedHours,
+        uncoveredRoleHours,
+        managerlessKeyHolderHours,
+        excessManagerlessKeyHolderHours,
+        missingOpeners,
+        excessOpeners,
+        missingClosers,
+        excessClosers,
+        excessMiddleShifts,
+        missingEmployees,
+        excessEmployees,
+        openers: openerIds.size,
+        closers: closerIds.size,
+        middleShifts: middleIds.size,
+        employeeCount: employeeIds.size,
+        penalty: understaffedHours * 8 + uncoveredRoleHours * 12 + excessManagerlessKeyHolderHours * 12
+            + missingOpeners * 8 + excessOpeners * 16
+            + missingClosers * 8 + excessClosers * 16
+            + excessMiddleShifts * 12 + missingEmployees * 8 + excessEmployees * 32
+    };
+}
+
+function createAutoSchedule() {
+    if (scheduleLocked) throw new Error("Unlock this schedule before creating an auto-schedule.");
+    const weeklyMax = Number(document.getElementById("autoScheduleWeeklyMax").value);
+    const dailyMax = Number(document.getElementById("autoScheduleDailyMax").value);
+    if (!Number.isInteger(weeklyMax) || weeklyMax < 0 || weeklyMax > 168) {
+        throw new Error("The weekly maximum must be between 0 and 168 hours.");
+    }
+    if (!Number.isInteger(dailyMax) || dailyMax < 3 || dailyMax > 16) {
+        throw new Error("The daily maximum must be between 3 and 16 hours.");
+    }
+    const selectedEmployeeIds = new Set([...document.querySelectorAll("#autoScheduleEmployees input:checked")]
+        .map(checkbox => checkbox.dataset.employeeId));
+    const selectedDays = new Set([...document.querySelectorAll("#autoScheduleDays input:checked")]
+        .map(checkbox => checkbox.dataset.day));
+    if (!selectedDays.size) throw new Error("Select at least one day to schedule.");
+
+    const nextWeeks = cloneEmployeeData(scheduleWeeks);
+    const nextWeek = nextWeeks[currentWeekId];
+    if (!nextWeek || !nextWeek.days) throw new Error("The selected week is not available.");
+    const weeklyMinutes = new Map(getAllEmployees().map(employee => [String(employee.id), 0]));
+    scheduleDays.forEach(day => {
+        if (selectedDays.has(day.key)) {
+            nextWeek.days[day.key] = {};
+            return;
+        }
+        getDayShifts(day.key, currentWeekId).forEach(shift => {
+            const employeeId = getShiftEmployeeId(shift.info);
+            if (employeeId === null || employeeId === undefined) return;
+            const start = timeToMinutes(shift.startTime);
+            const end = timeToMinutes(shift.endTime);
+            if (start === null || end === null || end <= start) return;
+            const key = String(employeeId);
+            weeklyMinutes.set(key, (weeklyMinutes.get(key) || 0) + end - start);
+        });
+    });
+
+    let generatedShiftCount = 0;
+    let shiftSequence = 0;
+    const remainingGaps = [];
+    scheduleDays.filter(day => selectedDays.has(day.key)).forEach(day => {
+        const shifts = [];
+        const scheduledToday = new Set();
+        const candidates = [];
+        const { openingIndex, closingIndex } = getAutoScheduleBoundaries(currentWeekId, day.key);
+        getAllEmployees().forEach(employee => {
+            const employeeId = String(employee.id);
+            if (!selectedEmployeeIds.has(employeeId)) return;
+            for (let startIndex = openingIndex; startIndex < closingIndex; startIndex++) {
+                for (let duration = 3; duration <= dailyMax && startIndex + duration <= closingIndex; duration++) {
+                    const endIndex = startIndex + duration;
+                    let available = true;
+                    for (let index = startIndex; index < endIndex; index++) {
+                        if (!isEmployeeAvailableAt(employee.id, day.key, scheduleTimes[index], true, currentWeekId).available) {
+                            available = false;
+                            break;
+                        }
+                    }
+                    if (available) candidates.push({ employee, startIndex, endIndex, duration });
+                }
+            }
+        });
+
+        while (true) {
+            const currentGaps = getAutoScheduleGaps(shifts, day.key, currentWeekId);
+            if (!currentGaps.penalty) break;
+            let best = null;
+            candidates.forEach(candidate => {
+                const employeeId = String(candidate.employee.id);
+                if (scheduledToday.has(employeeId)) return;
+                const currentMinutes = weeklyMinutes.get(employeeId) || 0;
+                if (currentMinutes + candidate.duration * 60 > weeklyMax * 60) return;
+                const possibleShift = {
+                    employee: candidate.employee,
+                    startIndex: candidate.startIndex,
+                    endIndex: candidate.endIndex
+                };
+                const improvedGaps = getAutoScheduleGaps([...shifts, possibleShift], day.key, currentWeekId);
+                const boundaryBenefit = currentGaps.missingOpeners + currentGaps.missingClosers
+                    - improvedGaps.missingOpeners - improvedGaps.missingClosers;
+                const benefit = currentGaps.penalty - improvedGaps.penalty;
+                if (boundaryBenefit <= 0 && benefit <= 0) return;
+                const fairness = (weeklyMax * 60 - currentMinutes) / (weeklyMax * 60 + 1);
+                const boundaryPriority = candidate.startIndex === openingIndex || candidate.endIndex === closingIndex
+                    ? 0.1
+                    : 0;
+                const shiftLengthPreference = 8 - Math.abs(candidate.duration - 8) * 2;
+                const managerExtensionPriority = getEmployeePosition(candidate.employee) === "Manager"
+                    ? Math.max(0, candidate.duration - 8) * 0.25
+                    : 0;
+                const managerPriority = getEmployeePosition(candidate.employee) === "Manager" ? 0.1 : 0;
+                const score = boundaryBenefit * 1000 + benefit
+                    + managerExtensionPriority + managerPriority
+                    + shiftLengthPreference + fairness * 0.001 + boundaryPriority;
+                if (!best || score > best.score) best = { ...candidate, score };
+            });
+            if (!best) break;
+
+            const employeeId = String(best.employee.id);
+            const startTime = indexToTime(best.startIndex);
+            const endTime = indexToTime(best.endIndex);
+            shifts.push({
+                employee: best.employee,
+                startIndex: best.startIndex,
+                endIndex: best.endIndex,
+                startTime,
+                endTime
+            });
+            scheduledToday.add(employeeId);
+            weeklyMinutes.set(employeeId, (weeklyMinutes.get(employeeId) || 0) + best.duration * 60);
+            shiftSequence++;
+            nextWeek.days[day.key][`auto_${Date.now()}_${shiftSequence}`] = {
+                start_time: startTime,
+                end_time: endTime,
+                employee: best.employee.id
+            };
+            generatedShiftCount++;
+        }
+
+        const gaps = getAutoScheduleGaps(shifts, day.key, currentWeekId);
+        if (gaps.penalty) {
+            const issues = [];
+            const addIssue = (count, singular, plural = `${singular}s`) => {
+                if (count) issues.push(`${count} ${count === 1 ? singular : plural}`);
+            };
+            addIssue(gaps.understaffedHours, "understaffed hour");
+            addIssue(gaps.uncoveredRoleHours, "hour without a manager or key holder", "hours without managers or key holders");
+            addIssue(gaps.excessManagerlessKeyHolderHours, "excess managerless key-holder hour");
+            addIssue(gaps.missingOpeners, "missing opener");
+            addIssue(gaps.excessOpeners, "excess opener");
+            addIssue(gaps.missingClosers, "missing closer");
+            addIssue(gaps.excessClosers, "excess closer");
+            addIssue(gaps.excessMiddleShifts, "excess middle shift");
+            if (gaps.missingEmployees) {
+                issues.push(`needs ${gaps.missingEmployees} more employee${gaps.missingEmployees === 1 ? "" : "s"} to reach 5`);
+            }
+            if (gaps.excessEmployees) {
+                issues.push(`${gaps.excessEmployees} employee${gaps.excessEmployees === 1 ? "" : "s"} above the 7-person limit`);
+            }
+            remainingGaps.push(`${day.label}: ${issues.join("; ")}.`);
+        }
+    });
+
+    scheduleWeeks = nextWeeks;
+    selectedShift = null;
+    persistSchedule();
+    renderScheduleGrid();
+    updateScheduleControls();
+    if (remainingGaps.length) {
+        showScheduleError(`Auto-schedule saved ${generatedShiftCount} shift(s), but could not meet all coverage requirements:\n${remainingGaps.join("\n")}`);
+    } else {
+        showScheduleSuccess(`Auto-schedule complete. Created ${generatedShiftCount} shift(s) for ${selectedDays.size} day(s).`);
+    }
+}
 
 
 // ===============================
@@ -2008,20 +2472,8 @@ document.getElementById("importFileInput").addEventListener("change", async (eve
     try {
         const files = [...input.files];
         if (!files.length) return;
-        if (files.some(file => file.name.toLowerCase().endsWith(".json"))) {
-            if (files.length !== 1) throw new Error("Import a legacy JSON backup by itself, not alongside CSV files.");
-            await importLegacyJson(await files[0].text());
-        } else {
-            const sections = new Map();
-            for (const file of files) {
-                const section = parseCsvSection(await file.text());
-                if (sections.has(section.name)) {
-                    throw new Error(`More than one ${section.name} CSV was selected.`);
-                }
-                sections.set(section.name, section.rows);
-            }
-            await importCsvSections(sections);
-        }
+        if (files.length !== 1) throw new Error("Import one JSON backup file at a time.");
+        await importScheduleJson(await files[0].text());
     } catch (error) {
         showScheduleError(`Import failed: ${error.message}`);
         console.error("Could not import schedule data.", error);
@@ -2032,82 +2484,21 @@ document.getElementById("importFileInput").addEventListener("change", async (eve
 
 document.getElementById("exportScheduleBtn").addEventListener("click", async () => {
     try {
-        const employeesList = getAllEmployees();
-        const files = [
-            {
-                name: "employees.csv",
-                title: "EMPLOYEES",
-                instructions: "Edit one employee per row. New IDs add employees; existing IDs update them. Removing a row does not delete an employee.",
-                headers: ["Employee ID", "Employee Name", "Job Title", "Schedule Color", "Profile Image URL"],
-                guide: [
-                    "Unique ID used to connect this employee to availability, time off, and shifts.",
-                    "Employee's displayed name.",
-                    "Use GSS, GSS_key_holder, or Manager.",
-                    "Optional hex color, such as #52B8DA. Colors are made unique on import.",
-                    "Optional image URL."
-                ],
-                rows: employeesList.map(employee => [
-                    employee.id,
-                    employee.name || "",
-                    getEmployeePosition(employee),
-                    employee.scheduleColor || "",
-                    employee.profile_image || employee.profileImage || ""
-                ])
-            },
-            {
-                name: "availability.csv",
-                title: "EMPLOYEE AVAILABILITY",
-                instructions: "Add one row per employee and available range. Times use 24-hour HH:MM format; store hours are 06:00-22:00.",
-                headers: ["Employee ID", "Day", "Fully Available", "Available From", "Available Until"],
-                guide: [
-                    "Must match an Employee ID in employees.csv.",
-                    "Use sun, mon, tue, wed, thu, fri, or sat.",
-                    "Use true when available all day; use false for a specific range or no availability.",
-                    "When Fully Available is false, enter the start of an available range; leave blank if unavailable all day.",
-                    "When Fully Available is false, enter the end of an available range; leave blank if unavailable all day."
-                ],
-                rows: employeesList.flatMap(employee => getAvailabilityCsvRows(employee))
-            },
-            {
-                name: "time_off.csv",
-                title: "TIME OFF",
-                instructions: "Add one row per time-off period. Enter dates as YYYY-MM-DD. Leave both dates blank for no time off.",
-                headers: ["Employee ID", "First Day Off", "Last Day Off"],
-                guide: [
-                    "Must match an Employee ID in employees.csv.",
-                    "First date of the time-off period, YYYY-MM-DD.",
-                    "Last date of the time-off period, YYYY-MM-DD."
-                ],
-                rows: employeesList.flatMap(employee => {
-                    const timeOff = Array.isArray(employee.timeOff) ? employee.timeOff : [];
-                    return timeOff.length
-                        ? timeOff.map(period => [employee.id, period.start_date || "", period.end_date || ""])
-                        : [[employee.id, "", ""]];
-                })
-            },
-            {
-                name: "schedule.csv",
-                title: "WEEK SCHEDULE",
-                instructions: "This file contains shifts for the currently selected week. Add one shift per row; remove a row to remove its shift. Import replaces the selected week only; each employee can have one shift per day.",
-                headers: ["Day", "Employee ID", "Shift Start", "Shift End"],
-                guide: [
-                    "Use sun, mon, tue, wed, thu, fri, or sat.",
-                    "Must match an Employee ID in employees.csv.",
-                    "Use 24-hour HH:MM format, from 06:00 through 22:00.",
-                    "Use 24-hour HH:MM format. Shifts must be at least 3 hours."
-                ],
-                rows: scheduleDays.flatMap(day => getDayShifts(day.key).map(shift => [
-                    day.key,
-                    getShiftEmployeeId(shift.info) ?? "",
-                    shift.startTime,
-                    shift.endTime
-                ]))
+        const backup = {
+            format: "misters-mls-schedule-backup",
+            version: 1,
+            employees: cloneEmployeeData(employees),
+            scheduleWeeks: {
+                [currentWeekId]: {
+                    date: scheduleWeeks[currentWeekId].date,
+                    days: cloneEmployeeData(scheduleWeeks[currentWeekId].days)
+                }
             }
-        ];
+        };
 
         const links = document.getElementById("scheduleExportLinks");
         links.replaceChildren();
-        files.forEach(file => links.appendChild(createCsvDownloadLink(file)));
+        links.appendChild(createJsonDownloadLink(backup));
         document.getElementById("scheduleExportDialog").showModal();
     } catch (error) {
         showScheduleError(`Export failed: ${error.message}`);
@@ -2149,22 +2540,14 @@ function csvEscape(value) {
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function createCsvDownloadLink({ name, title, instructions, headers, guide, rows }) {
-    const guideRow = ["# HELP - column guide", ...guide].map(csvEscape).join(",");
-    const csv = [
-        csvEscape(`# ${title}`),
-        csvEscape(`# ${instructions}`),
-        headers.map(csvEscape).join(","),
-        guideRow,
-        ...rows.map(row => row.map(csvEscape).join(","))
-    ].join("\r\n");
-    const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+function createJsonDownloadLink(data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.className = "schedule-export-link";
     link.href = url;
-    link.download = name;
-    link.textContent = `Download ${name}`;
+    link.download = "schedule_data.json";
+    link.textContent = "Download schedule_data.json";
     link.dataset.blobUrl = url;
     return link;
 }
@@ -2232,6 +2615,7 @@ function parseCsvText(text) {
     };
     const sectionForHeaders = headers => {
         const headerSet = new Set(headers);
+        if (headerSet.has("record_type") && headerSet.has("employee_id")) return "complete";
         if (headerSet.has("name") && headerSet.has("job_position") && headerSet.has("employee_id")) return "employees";
         if (headerSet.has("employee_id") && headerSet.has("day") && headerSet.has("fully_available")) return "availability";
         if (headerSet.has("employee_id") && headerSet.has("start_date") && headerSet.has("end_date")) return "time_off";
@@ -2255,6 +2639,9 @@ function parseCsvSection(text) {
     const parsedCsv = parseCsvText(text);
     const { headers: csvHeaders, rows } = parsedCsv;
     const headers = new Set(csvHeaders);
+    if (headers.has("record_type") && headers.has("employee_id")) {
+        return { name: "complete", rows };
+    }
     if (headers.has("name") && headers.has("job_position") && headers.has("employee_id")) {
         return { name: "employees", rows };
     }
@@ -2440,6 +2827,28 @@ function normalizeImportedEmployeeColors(employeeData) {
     return reassigned;
 }
 
+function importCompleteCsv(rows) {
+    const sectionNames = ["employees", "availability", "time_off", "schedule"];
+    const sections = new Map(sectionNames.map(name => [name, []]));
+    rows.forEach((row, index) => {
+        const type = row.record_type.trim().toLowerCase();
+        const sectionName = type === "employee" ? "employees" : type;
+        if (!sections.has(sectionName)) {
+            throw new Error(`CSV row ${index + 2} has an invalid record type "${row.record_type}".`);
+        }
+        const normalizedRow = { ...row };
+        if (sectionName === "availability") {
+            normalizedRow.start_time = row.availability_start_time;
+            normalizedRow.end_time = row.availability_end_time;
+        } else if (sectionName === "schedule") {
+            normalizedRow.start_time = row.schedule_start_time;
+            normalizedRow.end_time = row.schedule_end_time;
+        }
+        sections.get(sectionName).push(normalizedRow);
+    });
+    return importCsvSections(sections);
+}
+
 function commitImportedData(nextEmployees, nextWeeks) {
     const previousEmployees = localStorage.getItem("employees");
     const previousWeeks = localStorage.getItem("scheduleWeeks");
@@ -2464,6 +2873,7 @@ function commitImportedData(nextEmployees, nextWeeks) {
     populateEmployeeSidebar();
     window.dispatchEvent(new CustomEvent("employee-colors-changed"));
     loadWeek(currentWeekId);
+    recordUndoHistory();
 }
 
 async function importCsvSections(sections) {
@@ -2505,10 +2915,10 @@ async function importCsvSections(sections) {
     }
 }
 
-async function importLegacyJson(text) {
+async function importScheduleJson(text) {
     const importedData = JSON.parse(text);
     if (!importedData.employees || !importedData.scheduleWeeks) {
-        throw new Error("The JSON backup does not contain employees and schedule weeks.");
+        throw new Error("The JSON file is not a valid schedule backup; employees and schedule weeks are required.");
     }
     if (scheduleLocked) throw new Error("Unlock the selected week before importing its schedule.");
 
