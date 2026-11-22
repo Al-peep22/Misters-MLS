@@ -123,7 +123,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // ===============================
     // TIME OFF FORM
     // ===============================
+    const timeOffStart = document.getElementById("timeOffStart");
+    const timeOffEnd = document.getElementById("timeOffEnd");
+    timeOffStart.addEventListener("input", () => timeOffDates.updateInputs(timeOffStart, timeOffEnd));
+
     document.getElementById("addTimeOffBtn").addEventListener("click", () => {
+        timeOffDates.updateInputs(timeOffStart, timeOffEnd);
         document.getElementById("timeOffForm").hidden = false;
     });
 
@@ -132,11 +137,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     document.getElementById("submitTimeOffBtn").addEventListener("click", () => {
-        const start = document.getElementById("timeOffStart").value;
-        const end = document.getElementById("timeOffEnd").value;
+        const start = timeOffStart.value;
+        const end = timeOffEnd.value;
 
-        if (!start || !end || start > end) {
-            createEmployeeError.textContent = "Choose valid time-off dates; the end date cannot be before the start date.";
+        if (!timeOffDates.canSave(start, end)) {
+            createEmployeeError.textContent = "Choose time-off dates starting today or later; the end date cannot be before the start date.";
             return;
         }
         timeOff.push({ start_date: start, end_date: end });
@@ -158,6 +163,21 @@ document.addEventListener("DOMContentLoaded", () => {
         const profile = selectedProfileImage || profileInput.value.trim();
         const position = jobInput.value;
 
+        const today = timeOffDates.today();
+        if (timeOff.some(period => period.start_date < today)) {
+            timeOff = timeOff.filter(period => period.end_date >= today).map(period => ({
+                ...period,
+                start_date: period.start_date < today ? today : period.start_date
+            }));
+            document.querySelector(".employeeFormTimeOff").textContent =
+                timeOff.length ? `${timeOff.length} time off block(s) set` : "n/a";
+            createEmployeeError.textContent = "Some pending time-off dates passed. Expired periods were removed and ongoing periods now start today; review and submit again.";
+            return;
+        }
+        if (timeOff.some(period => !timeOffDates.canSave(period.start_date, period.end_date))) {
+            createEmployeeError.textContent = "Time off must start today or later, and the end date cannot be before the start date.";
+            return;
+        }
         if (!name || !position) {
             createEmployeeError.textContent = "Name and job position are required.";
             return;

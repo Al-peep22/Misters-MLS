@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="./css/web.css">
 
     <!-- JS -->
+    <script defer src="./js/timeOff.js"></script>
     <script defer src="./js/schedules.js"></script>
     <script defer src="./js/addEmployee.js"></script>
 </head>
@@ -90,10 +91,11 @@
                 <div class="schedule-legend">
                     <p><span class="schedule-legend-swatch available"></span>Available time</p>
                     <p><span class="schedule-legend-swatch unavailable"></span>Unavailable time</p>
+                    <p><span class="schedule-legend-swatch store-closed"></span>Store closed</p>
                     <p><span class="schedule-legend-swatch assigned"></span>Scheduled shift</p>
                 </div>
 
-                <p class="schedule-help">Select an employee, then click an available time to create a shift of up to 8 hours, stopping at unavailable time. Shifts must be at least 3 hours. Select a shift to use the controls at its ends.</p>
+                <p class="schedule-help">Select an employee, then click an available time to create a shift of up to 8 hours, stopping at unavailable time or closing. Time off applies only to its specified dates and is removed after its end date. Shifts must be at least 3 hours and within store hours. Select a shift to use the controls at its ends.</p>
                 <button id="removeShiftBtn" disabled>Remove Selected Shift</button>
             </aside>
         </section>

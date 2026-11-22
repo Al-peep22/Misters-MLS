@@ -63,6 +63,31 @@ footer {
 }
 
 /* ===========================
+   TUTORIAL PAGE
+   =========================== */
+
+.tutorial-back {
+    display: inline-block;
+    padding: 8px 12px;
+    border-radius: 4px;
+    background-color: #0077c8;
+    color: #fff;
+    font-size: 0.9rem;
+    text-decoration: none;
+}
+
+.tutorial-back:hover {
+    background-color: #005a96;
+}
+
+.tutorial-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 16px;
+}
+
+/* ===========================
    LOGIN PAGE
    =========================== */
 
@@ -459,8 +484,8 @@ footer {
     background-color: #dbeafe;
     color: #1f3b6d;
     font-weight: 700;
-    outline: 2px solid #d1d5db;
-    outline-offset: -2px;
+    outline: 4px solid var(--employee-color);
+    outline-offset: -4px;
 }
 
 .employee-weekly-hours {
@@ -1002,10 +1027,15 @@ footer {
     visibility: hidden;
 }
 
+.schedule-table td.schedule-slot.store-closed:not(.occupied),
+.schedule-legend-swatch.store-closed {
+    background-color: #e5e7eb;
+}
+
 .schedule-table thead th {
     position: sticky;
     top: 0;
-    z-index: 2;
+    z-index: 4;
     height: 36px;
     background-color: #f3f4f6;
     font-size: 0.8rem;
@@ -1026,7 +1056,26 @@ footer {
 }
 
 .schedule-table thead th:first-child {
-    z-index: 3;
+    z-index: 5;
+}
+
+.schedule-table tbody th:first-child {
+    z-index: 6;
+}
+
+.schedule-table tbody th span {
+    position: absolute;
+    top: -0.5px;
+    left: 50%;
+    padding: 0 4px;
+    background-color: #e5e7eb;
+    color: #111827;
+    white-space: nowrap;
+    transform: translate(-50%, -50%);
+}
+
+.schedule-table .schedule-closing-row th span {
+    top: -1px;
 }
 
 .shift-segment {
@@ -1071,8 +1120,8 @@ footer {
     background-color: rgba(255, 255, 255, 0.45);
 }
 
-.shift-segment.has-top-controls .shift-segment-label {
-    margin-top: 16px;
+.shift-segment.has-top-controls {
+    z-index: 3;
 }
 
 .shift-segment.has-bottom-controls {
@@ -1090,11 +1139,14 @@ footer {
     pointer-events: auto;
 }
 
-.shift-edge-controls:first-child {
-    top: 0;
+.shift-edge-controls.top {
+    position: relative;
+    left: auto;
+    right: auto;
+    margin: 0 1px;
 }
 
-.shift-edge-controls:last-child {
+.shift-edge-controls.bottom {
     bottom: 0;
 }
 
@@ -1446,7 +1498,7 @@ footer {
 }
 
 .schedule-body[data-theme="light"] .schedule-table,
-.schedule-body[data-theme="light"] .schedule-table td.schedule-slot.available,
+.schedule-body[data-theme="light"] .schedule-table td.schedule-slot.available:not(.store-closed),
 .schedule-body[data-theme="light"] .schedule-legend-swatch.available {
     background-color: #fff;
 }
@@ -1534,7 +1586,7 @@ footer {
     color: #d1d5db;
 }
 
-.schedule-body[data-theme="dark"] .schedule-table td.schedule-slot.available,
+.schedule-body[data-theme="dark"] .schedule-table td.schedule-slot.available:not(.store-closed),
 .schedule-body[data-theme="dark"] .schedule-legend-swatch.available {
     background-color: #fff;
 }
@@ -1548,6 +1600,11 @@ footer {
     background-color: #f3f4f6;
     color: #193651;
     border-color: #f7c03a;
+}
+
+.schedule-body[data-theme="dark"] .schedule-table tbody th span {
+    background-color: #fff;
+    font-size: 0.8rem;
 }
 
 .schedule-body[data-theme="dark"] .schedule-table tr > :nth-child(2),
@@ -1598,10 +1655,6 @@ footer {
     background-color: #f3f4f6;
     color: #193651;
     border-color: #f7c03a;
-}
-
-.schedule-body[data-theme="dark"] .employee-details-button.selected {
-    outline-color: #d1d5db;
 }
 
 .schedule-body[data-theme="dark"] .employee-weekly-hours {

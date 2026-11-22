@@ -1,7 +1,7 @@
 // js/web.js
 const VALID_USERS = [
   { username: "misters_admin", password: "secret123" },
-  { username: "westvalley_mgr", password: "anotherpass" }
+  { username: "mcw", password: "mcw" }
 ];
 
 document.addEventListener("DOMContentLoaded", () => {

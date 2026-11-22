@@ -85,6 +85,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     employees = savedEmployees === null
         ? await loadJSON("./json/employees.json")
         : JSON.parse(savedEmployees);
+    removeExpiredEmployeeTimeOff();
     if (savedEmployees === null) {
         localStorage.setItem("employees", JSON.stringify(employees));
     }
@@ -100,17 +101,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     const savedWeekId = getSchedulePreferences().weekId;
     const preferredWeekId = availableWeekIds.includes(savedWeekId)
         ? savedWeekId
-        : availableWeekIds[availableWeekIds.length - 1];
+        : availableWeekIds[0];
     const firstWeek = preferredWeekId;
     if (!firstWeek) {
         document.getElementById("weekSelect").disabled = true;
-        showScheduleError("No schedule weeks are available for the previous or current week.");
+        showScheduleError("No schedule weeks are available for the current or next week.");
         return;
     }
     document.getElementById("weekSelect").disabled = false;
     document.getElementById("weekSelect").value = firstWeek;
     loadWeek(firstWeek);
     initializeUndoHistory();
+    startCalendarDateRefresh();
 });
 
 function applyScheduleTheme(theme) {
@@ -145,19 +147,24 @@ function populateWeekSelector() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const currentWeekStart = getWeekStartDate(today);
-    const previousWeekStart = new Date(currentWeekStart);
-    previousWeekStart.setDate(previousWeekStart.getDate() - 7);
-    ensureScheduleWeeks([previousWeekStart, currentWeekStart]);
-    const visibleWeeks = Object.entries(scheduleWeeks)
+    const nextWeekStart = new Date(currentWeekStart);
+    nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+    const weekStarts = [currentWeekStart, nextWeekStart];
+    ensureScheduleWeeks(weekStarts);
+    const weeks = Object.entries(scheduleWeeks)
         .map(([weekId, week]) => ({
             weekId,
             week,
             weekStart: getWeekStartDate(getWeekReferenceDate(weekId, week))
-        }))
-        .filter(entry => entry.weekStart
-            && entry.weekStart >= previousWeekStart
-            && entry.weekStart <= currentWeekStart)
-        .sort((first, second) => first.weekStart - second.weekStart);
+        }));
+    const preferredId = currentWeekId || getSchedulePreferences().weekId;
+    const visibleWeeks = weekStarts.map(weekStart => {
+        const matches = weeks.filter(entry => entry.weekStart
+            && entry.weekStart.getTime() === weekStart.getTime());
+        return matches.find(entry => entry.weekId === preferredId)
+            || matches.find(entry => entry.weekId === dateToScheduleKey(weekStart))
+            || matches[0];
+    }).filter(Boolean);
 
     visibleWeeks.forEach(({ weekId, weekStart }) => {
         const opt = document.createElement("option");
@@ -167,12 +174,64 @@ function populateWeekSelector() {
         opt.textContent = `${formatMonthDay(weekStart)} - ${formatMonthDay(weekEnd)}`;
         weekSelect.appendChild(opt);
     });
-    weekSelect.value = visibleWeeks[visibleWeeks.length - 1]?.weekId || "";
+    weekSelect.value = visibleWeeks[0]?.weekId || "";
 
     weekSelect.onchange = () => {
         loadWeek(weekSelect.value);
     };
     return visibleWeeks.map(week => week.weekId);
+}
+
+function removeExpiredEmployeeTimeOff() {
+    const savedEmployees = localStorage.getItem("employees");
+    const nextEmployees = savedEmployees === null ? cloneEmployeeData(employees) : JSON.parse(savedEmployees);
+    const removedFromStorage = timeOffDates.removeExpired(nextEmployees);
+    if (removedFromStorage) {
+        try {
+            localStorage.setItem("employees", JSON.stringify(nextEmployees));
+        } catch (error) {
+            console.error("Could not remove expired time off.", error);
+            showScheduleError("Could not remove expired time off. Check available browser storage.");
+            return false;
+        }
+    }
+    return Boolean(timeOffDates.removeExpired(employees) || removedFromStorage);
+}
+
+function startCalendarDateRefresh() {
+    let lastDate = timeOffDates.today();
+    let timer;
+    const refresh = () => {
+        const today = timeOffDates.today();
+        if (today !== lastDate) {
+            lastDate = today;
+            const removed = removeExpiredEmployeeTimeOff();
+            const selectedWeek = currentWeekId;
+            const savedWeeks = localStorage.getItem("scheduleWeeks");
+            if (savedWeeks !== null) scheduleWeeks = JSON.parse(savedWeeks);
+            const visibleWeeks = populateWeekSelector();
+            const nextSelectedWeek = visibleWeeks.includes(selectedWeek) ? selectedWeek : visibleWeeks[0];
+            document.getElementById("weekSelect").value = nextSelectedWeek;
+            if (nextSelectedWeek !== selectedWeek) {
+                loadWeek(nextSelectedWeek);
+            } else {
+                renderScheduleGrid();
+                updateScheduleControls();
+            }
+            if (removed && activeDetailsEmployee && document.getElementById("employeeDetailsDialog").open) {
+                populateEmployeeDetailsList(document.getElementById("detailsTimeOff"), formatEmployeeTimeOff(activeDetailsEmployee.timeOff));
+            }
+        }
+        clearTimeout(timer);
+        const nextMidnight = new Date();
+        nextMidnight.setHours(24, 0, 0, 0);
+        timer = setTimeout(refresh, nextMidnight.getTime() - Date.now() + 50);
+    };
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) refresh();
+    });
+    window.addEventListener("focus", refresh);
+    refresh();
 }
 
 function ensureScheduleWeeks(weekStarts) {
@@ -206,14 +265,7 @@ function getWeekReferenceDate(weekId, week) {
 }
 
 function parseScheduleDate(value) {
-    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-    const [year, month, day] = value.split("-").map(Number);
-    const date = new Date(year, month - 1, day);
-    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-        return null;
-    }
-    date.setHours(0, 0, 0, 0);
-    return date;
+    return timeOffDates.parse(value);
 }
 
 function parseImportedDate(value) {
@@ -249,7 +301,7 @@ function getScheduleDateForDay(weekId, day) {
     return dateToScheduleKey(date);
 }
 
-function getAutoScheduleBoundaries(weekId, day) {
+function getStoreHours(weekId, day) {
     const scheduleDate = getScheduleDateForDay(weekId, day);
     if (!scheduleDate) throw new Error(`Could not determine the schedule date for ${getDayLabel(day)}.`);
     const monthAndDay = scheduleDate.slice(5);
@@ -262,6 +314,16 @@ function getAutoScheduleBoundaries(weekId, day) {
         openingIndex: (timeToMinutes(openingTime) - 360) / 60,
         closingIndex: (timeToMinutes(closingTime) - 360) / 60
     };
+}
+
+function isWithinStoreHours(weekId, day, startTime, endTime) {
+    const { openingTime, closingTime } = getStoreHours(weekId, day);
+    const start = timeToMinutes(startTime);
+    const end = timeToMinutes(endTime);
+    return start !== null && end !== null
+        && start >= timeToMinutes(openingTime)
+        && end <= timeToMinutes(closingTime)
+        && end > start;
 }
 
 function dateToScheduleKey(date) {
@@ -390,12 +452,17 @@ function renderScheduleGrid() {
             event.preventDefault();
             removeDayShifts(day.key);
         });
+        const { openingIndex, closingIndex } = getStoreHours(currentWeekId, day.key);
         if (availabilityEmployeeId !== null && availabilityEmployeeId !== undefined
-            && scheduleTimes.every(time =>
+            && scheduleTimes.slice(openingIndex, closingIndex).every(time =>
                 !isEmployeeAvailableAt(availabilityEmployeeId, day.key, time).available
             )) {
             header.classList.add("day-unavailable");
-            header.setAttribute("aria-label", `${header.textContent}: unavailable all day`);
+            const employee = getEmployeeById(availabilityEmployeeId);
+            const onTimeOff = employee && isEmployeeOnTimeOff(employee, getScheduleDateForDay(currentWeekId, day.key));
+            const reason = onTimeOff ? "time off" : "unavailable all day";
+            header.setAttribute("aria-label", `${header.textContent}: ${reason}`);
+            if (onTimeOff) header.title = "Time off. Right-click to remove all shifts for this day";
         }
         headerRow.appendChild(header);
     });
@@ -404,12 +471,15 @@ function renderScheduleGrid() {
 
     const tbody = document.createElement("tbody");
     const shiftsByDay = Object.fromEntries(scheduleDays.map(day => [day.key, getDayShifts(day.key)]));
+    const hoursByDay = Object.fromEntries(scheduleDays.map(day => [day.key, getStoreHours(currentWeekId, day.key)]));
 
     scheduleTimes.forEach((time, rowIndex) => {
         const row = document.createElement("tr");
         const timeCell = document.createElement("th");
         timeCell.scope = "row";
-        timeCell.textContent = formatScheduleTime(time);
+        const timeLabel = document.createElement("span");
+        timeLabel.textContent = formatScheduleTime(time);
+        timeCell.appendChild(timeLabel);
         row.appendChild(timeCell);
 
         scheduleDays.forEach(day => {
@@ -420,8 +490,15 @@ function renderScheduleGrid() {
             const occupyingShifts = shiftsByDay[day.key].filter(shift =>
                 rowIndex >= shift.startIndex && rowIndex < shift.endIndex
             );
+            const storeClosed = rowIndex < hoursByDay[day.key].openingIndex
+                || rowIndex >= hoursByDay[day.key].closingIndex;
             cell.classList.add("schedule-slot", availability.available ? "available" : "unavailable");
-            cell.setAttribute("aria-label", `${day.label} ${formatScheduleTime(time)}: ${availability.available ? "available" : "unavailable"}`);
+            if (storeClosed) cell.classList.add("store-closed");
+            const status = storeClosed ? "store closed"
+                : availability.reason === "timeOff" ? "unavailable (time off)"
+                : availability.available ? "available" : "unavailable";
+            cell.setAttribute("aria-label", `${day.label} ${formatScheduleTime(time)}: ${status}`);
+            if (!storeClosed && availability.reason === "timeOff") cell.title = "Unavailable: time off";
             const orderedShifts = occupyingShifts.slice().sort((first, second) => {
                 if (selectedShift && selectedShift.day === day.key) {
                     const firstSelected = first.key === selectedShift.shiftKey;
@@ -483,14 +560,6 @@ function renderScheduleGrid() {
                 const segment = document.createElement("div");
                 segment.classList.add("shift-segment");
                 if (isSelected) segment.classList.add("selected");
-                if (isSelected && !scheduleLocked && selectedInCell.startIndex === rowIndex) {
-                    segment.classList.add("has-top-controls");
-                    segment.appendChild(createShiftControls([
-                        ["↑", "Extend shift up one hour", "extend-up"],
-                        ["↓", "Shrink shift from the top by one hour", "shrink-top"],
-                        ["⇈", "Extend shift to the top of the day", "extend-to-top"]
-                    ]));
-                }
 
                 orderedShifts.filter(shift => shift.startIndex === rowIndex).forEach(shift => {
                     const shiftLabel = document.createElement("button");
@@ -516,13 +585,26 @@ function renderScheduleGrid() {
                     segment.appendChild(shiftLabel);
                 });
 
+                if (isSelected && !scheduleLocked && selectedInCell.startIndex === rowIndex) {
+                    segment.classList.add("has-top-controls");
+                    const controls = createShiftControls([
+                        ["↑", "Extend shift up one hour", "extend-up"],
+                        ["↓", "Shrink shift from the top by one hour", "shrink-top"],
+                        ["⇈", "Extend shift to the top of the day", "extend-to-top"]
+                    ]);
+                    controls.classList.add("top");
+                    segment.appendChild(controls);
+                }
+
                 if (isSelected && !scheduleLocked && selectedInCell.endIndex - 1 === rowIndex) {
                     segment.classList.add("has-bottom-controls");
-                    segment.appendChild(createShiftControls([
+                    const controls = createShiftControls([
                         ["↓", "Extend shift down one hour", "extend-down"],
                         ["↑", "Shrink shift from the bottom by one hour", "shrink-bottom"],
                         ["⇊", "Extend shift to the bottom of the day", "extend-to-bottom"]
-                    ]));
+                    ]);
+                    controls.classList.add("bottom");
+                    segment.appendChild(controls);
                 }
                 cell.appendChild(segment);
             }
@@ -555,12 +637,14 @@ function renderScheduleGrid() {
     closingRow.classList.add("schedule-closing-row");
     const closingTime = document.createElement("th");
     closingTime.scope = "row";
-    closingTime.textContent = formatScheduleTime(indexToTime(scheduleTimes.length));
+    const closingLabel = document.createElement("span");
+    closingLabel.textContent = formatScheduleTime(indexToTime(scheduleTimes.length));
+    closingTime.appendChild(closingLabel);
     closingRow.appendChild(closingTime);
     scheduleDays.forEach(day => {
         const closingCell = document.createElement("td");
         closingCell.classList.add("schedule-closing-cell");
-        closingCell.setAttribute("aria-label", `${day.label}: store closes at 10pm`);
+        closingCell.setAttribute("aria-label", `${day.label}: store closed`);
         closingRow.appendChild(closingCell);
     });
     tbody.appendChild(closingRow);
@@ -653,6 +737,10 @@ function validateWeekSchedule(weekId) {
             .filter(Boolean);
         const scheduleDate = getScheduleDateForDay(weekId, day.key);
         shifts.forEach(shift => {
+            if (!isWithinStoreHours(weekId, day.key, shift.startTime, shift.endTime)) {
+                const { openingTime, closingTime } = getStoreHours(weekId, day.key);
+                issues.push(`${day.label}: ${shift.employee.name || "An employee"} has a shift outside store hours (${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}).`);
+            }
             if (isEmployeeOnTimeOff(shift.employee, scheduleDate)) {
                 issues.push(`${day.label}: ${shift.employee.name || "An employee"} is scheduled during time off (${formatEmployeeDate(scheduleDate)}).`);
             }
@@ -673,7 +761,7 @@ function validateWeekSchedule(weekId) {
                 })}.`);
             }
         });
-        const { openingTime, closingTime } = getAutoScheduleBoundaries(weekId, day.key);
+        const { openingTime, closingTime } = getStoreHours(weekId, day.key);
         const openingEmployees = shifts.filter(shift => shift.startTime === openingTime);
         const closingEmployees = shifts.filter(shift => shift.endTime === closingTime);
         const openingCount = new Set(openingEmployees.map(shift => String(shift.employee.id))).size;
@@ -689,7 +777,7 @@ function validateWeekSchedule(weekId) {
         const managerlessKeyHolderHours = [];
         const managerlessUncoveredHours = [];
         const understaffedHours = [];
-        const { openingIndex, closingIndex } = getAutoScheduleBoundaries(weekId, day.key);
+        const { openingIndex, closingIndex } = getStoreHours(weekId, day.key);
         scheduleTimes.forEach((time, index) => {
             if (index < openingIndex || index >= closingIndex) return;
             const working = shifts.filter(shift => index >= shift.startIndex && index < shift.endIndex);
@@ -758,17 +846,26 @@ function createShift(day, startTime) {
 
     const startIndex = scheduleTimes.indexOf(startTime);
     if (startIndex < 0) return;
+    const { openingIndex, closingIndex, openingTime, closingTime } = getStoreHours(currentWeekId, day);
+    if (startIndex < openingIndex || startIndex >= closingIndex) {
+        showScheduleError(`The store is closed at ${formatScheduleTime(startTime)} on ${getDayLabel(day)}. Store hours are ${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}.`);
+        return;
+    }
     if (getDayShifts(day).some(shift => String(shift.info.employee) === String(selectedEmployeeId))) {
         showScheduleError(`${employee.name} already has a shift on ${getDayLabel(day)}.`);
         return;
     }
-    if (!isEmployeeAvailableAt(selectedEmployeeId, day, startTime).available) {
-        showScheduleError(`${employee.name} is unavailable on ${getDayLabel(day)} at ${formatScheduleTime(startTime)}.`);
+    const availability = isEmployeeAvailableAt(selectedEmployeeId, day, startTime);
+    if (!availability.available) {
+        const date = formatEmployeeDate(getScheduleDateForDay(currentWeekId, day));
+        showScheduleError(availability.reason === "timeOff"
+            ? `${employee.name} has time off on ${date} and cannot be scheduled.`
+            : `${employee.name} is unavailable on ${getDayLabel(day)} at ${formatScheduleTime(startTime)}.`);
         return;
     }
 
     let endIndex = startIndex;
-    const maxEndIndex = Math.min(startIndex + 8, scheduleTimes.length);
+    const maxEndIndex = Math.min(startIndex + 8, closingIndex);
     while (endIndex < maxEndIndex
         && isEmployeeAvailableAt(selectedEmployeeId, day, scheduleTimes[endIndex]).available) {
         endIndex++;
@@ -834,13 +931,18 @@ function resizeSelectedShift(mode) {
     if (start === null || end === null) return;
     const startIndex = Math.floor((start - 360) / 60);
     const endIndex = Math.ceil((end - 360) / 60);
+    const { openingIndex, closingIndex, openingTime, closingTime } = getStoreHours(currentWeekId, selectedShift.day);
 
     let newStartIndex = startIndex;
     let newEndIndex = endIndex;
     const duration = endIndex - startIndex;
 
     if (mode === "extend-up" || mode === "extend-to-top") {
-        const target = mode === "extend-up" ? startIndex - 1 : 0;
+        if (startIndex <= openingIndex || endIndex > closingIndex) {
+            showScheduleError(`Cannot extend outside store hours (${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}).`);
+            return;
+        }
+        const target = mode === "extend-up" ? startIndex - 1 : openingIndex;
         while (newStartIndex > target) {
             const candidateTime = scheduleTimes[newStartIndex - 1];
             if (!candidateTime) break;
@@ -854,7 +956,11 @@ function resizeSelectedShift(mode) {
             newStartIndex--;
         }
     } else if (mode === "extend-down" || mode === "extend-to-bottom") {
-        const target = mode === "extend-down" ? endIndex + 1 : scheduleTimes.length;
+        if (endIndex >= closingIndex || startIndex < openingIndex) {
+            showScheduleError(`Cannot extend outside store hours (${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}).`);
+            return;
+        }
+        const target = mode === "extend-down" ? endIndex + 1 : closingIndex;
         while (newEndIndex < target) {
             const candidateTime = scheduleTimes[newEndIndex];
             if (!candidateTime) break;
@@ -1059,8 +1165,10 @@ function recordUndoHistory() {
 function restoreUndoSnapshot(snapshot) {
     const previousEmployees = localStorage.getItem("employees");
     const previousWeeks = localStorage.getItem("scheduleWeeks");
+    const restoredEmployees = JSON.parse(snapshot.employees);
+    timeOffDates.removeExpired(restoredEmployees);
     try {
-        localStorage.setItem("employees", snapshot.employees);
+        localStorage.setItem("employees", JSON.stringify(restoredEmployees));
         localStorage.setItem("scheduleWeeks", snapshot.scheduleWeeks);
     } catch (error) {
         try {
@@ -1078,7 +1186,7 @@ function restoreUndoSnapshot(snapshot) {
 
     restoringUndoState = true;
     try {
-        employees = JSON.parse(snapshot.employees);
+        employees = restoredEmployees;
         scheduleWeeks = JSON.parse(snapshot.scheduleWeeks);
         selectedShift = null;
         if (selectedEmployeeId !== null && !getEmployeeById(selectedEmployeeId)) {
@@ -1086,7 +1194,10 @@ function restoreUndoSnapshot(snapshot) {
         }
         populateEmployeeSidebar();
         window.dispatchEvent(new CustomEvent("employee-colors-changed"));
-        loadWeek(currentWeekId);
+        const visibleWeeks = populateWeekSelector();
+        const weekId = visibleWeeks.includes(currentWeekId) ? currentWeekId : visibleWeeks[0];
+        document.getElementById("weekSelect").value = weekId;
+        loadWeek(weekId);
         clearScheduleError();
     } finally {
         restoringUndoState = false;
@@ -1356,6 +1467,7 @@ function populateEmployeeSidebar() {
             detailsButton.classList.add("employee-details-button");
             detailsButton.textContent = emp.name || "Unnamed employee";
             detailsButton.style.borderLeft = `5px solid ${getEmployeeColor(emp.id)}`;
+            detailsButton.style.setProperty("--employee-color", getEmployeeColor(emp.id));
             const isSelected = String(emp.id) === String(selectedEmployeeId);
             detailsButton.classList.toggle("selected", isSelected);
             detailsButton.setAttribute("aria-pressed", String(isSelected));
@@ -1788,12 +1900,19 @@ function openTimeOffEditor(index) {
     editingTimeOffIndex = index;
     document.getElementById("editTimeOffStart").value = period.start_date || "";
     document.getElementById("editTimeOffEnd").value = period.end_date || "";
+    timeOffDates.updateInputs(document.getElementById("editTimeOffStart"), document.getElementById("editTimeOffEnd"), getExistingTimeOffStart(period.start_date));
     document.getElementById("editTimeOffError").textContent = "";
     document.getElementById("editTimeOffDialog").showModal();
 }
 
 function isValidTimeOffRange(start, end) {
-    return Boolean(start && end && start <= end);
+    return timeOffDates.isRange(start, end);
+}
+
+function getExistingTimeOffStart(start) {
+    return activeDetailsEmployee?.timeOff?.some(period =>
+        period && period.start_date === start && period.end_date >= timeOffDates.today()
+    ) ? start : null;
 }
 
 function getJobPositionLabel(position) {
@@ -1922,6 +2041,14 @@ document.getElementById("editTimeOffBtn").addEventListener("click", event => {
                 "Add the date range or close the add form before saving.";
             return;
         }
+        timeOffDraft = timeOffDraft.filter(period =>
+            !period || !isValidTimeOffRange(period.start_date, period.end_date) || period.end_date >= timeOffDates.today()
+        );
+        if (timeOffDraft.some(period => !period || !timeOffDates.canSave(period.start_date, period.end_date, getExistingTimeOffStart(period.start_date)))) {
+            document.getElementById("timeOffEditError").textContent =
+                "Time off must start today or later, and the end date cannot be before the start date.";
+            return;
+        }
         activeDetailsEmployee.timeOff = timeOffDraft.map(period => ({ ...period }));
         persistEmployees();
         const conflicts = reconcileAvailabilityConflicts(new Set([activeDetailsEmployee.id]));
@@ -1940,6 +2067,7 @@ document.getElementById("editTimeOffBtn").addEventListener("click", event => {
 
 document.getElementById("addEmployeeTimeOffBtn").addEventListener("click", () => {
     const form = document.getElementById("employeeTimeOffForm");
+    timeOffDates.updateInputs(document.getElementById("employeeTimeOffStart"), document.getElementById("employeeTimeOffEnd"));
     form.hidden = !form.hidden;
     document.getElementById("timeOffEditError").textContent = "";
 });
@@ -1947,9 +2075,9 @@ document.getElementById("addEmployeeTimeOffBtn").addEventListener("click", () =>
 document.getElementById("saveNewEmployeeTimeOffBtn").addEventListener("click", () => {
     const start = document.getElementById("employeeTimeOffStart").value;
     const end = document.getElementById("employeeTimeOffEnd").value;
-    if (!isValidTimeOffRange(start, end)) {
+    if (!timeOffDates.canSave(start, end)) {
         document.getElementById("timeOffEditError").textContent =
-            "Choose a valid start and end date; the end date cannot be before the start date.";
+            "Choose time-off dates starting today or later; the end date cannot be before the start date.";
         return;
     }
     timeOffDraft.push({ start_date: start, end_date: end });
@@ -1963,9 +2091,9 @@ document.getElementById("saveNewEmployeeTimeOffBtn").addEventListener("click", (
 document.getElementById("saveEditedTimeOffBtn").addEventListener("click", () => {
     const start = document.getElementById("editTimeOffStart").value;
     const end = document.getElementById("editTimeOffEnd").value;
-    if (!isValidTimeOffRange(start, end)) {
+    if (!timeOffDates.canSave(start, end, getExistingTimeOffStart(start))) {
         document.getElementById("editTimeOffError").textContent =
-            "Choose a valid start and end date; the end date cannot be before the start date.";
+            "Choose time-off dates starting today or later; the end date cannot be before the start date.";
         return;
     }
     if (editingTimeOffIndex === null || !timeOffDraft[editingTimeOffIndex]) return;
@@ -1973,6 +2101,15 @@ document.getElementById("saveEditedTimeOffBtn").addEventListener("click", () => 
     renderTimeOffDraft();
     editingTimeOffIndex = null;
     document.getElementById("editTimeOffDialog").close();
+});
+
+document.getElementById("employeeTimeOffStart").addEventListener("input", () => {
+    timeOffDates.updateInputs(document.getElementById("employeeTimeOffStart"), document.getElementById("employeeTimeOffEnd"));
+});
+
+document.getElementById("editTimeOffStart").addEventListener("input", () => {
+    const start = document.getElementById("editTimeOffStart");
+    timeOffDates.updateInputs(start, document.getElementById("editTimeOffEnd"), getExistingTimeOffStart(start.value));
 });
 
 document.getElementById("deleteEditedTimeOffBtn").addEventListener("click", () => {
@@ -2240,7 +2377,7 @@ function getAutoScheduleGaps(shifts, day, weekId) {
     let understaffedHours = 0;
     let uncoveredRoleHours = 0;
     let managerlessKeyHolderHours = 0;
-    const { openingIndex, closingIndex } = getAutoScheduleBoundaries(weekId, day);
+    const { openingIndex, closingIndex } = getStoreHours(weekId, day);
     scheduleTimes.forEach((time, index) => {
         if (index < openingIndex || index >= closingIndex) return;
         const working = shifts.filter(shift => index >= shift.startIndex && index < shift.endIndex);
@@ -2338,7 +2475,7 @@ function createAutoSchedule() {
         const shifts = [];
         const scheduledToday = new Set();
         const candidates = [];
-        const { openingIndex, closingIndex } = getAutoScheduleBoundaries(currentWeekId, day.key);
+        const { openingIndex, closingIndex } = getStoreHours(currentWeekId, day.key);
         getAllEmployees().forEach(employee => {
             const employeeId = String(employee.id);
             if (!selectedEmployeeIds.has(employeeId)) return;
@@ -2792,8 +2929,17 @@ function applyScheduleRows(week, employeeData, rows) {
             || timeToMinutes(end) - timeToMinutes(start) < 180) {
             throw new Error(`Schedule CSV row ${index + 2} needs a valid shift of at least 3 hours between 6am and 10pm.`);
         }
-        if (employeeId && !findEmployeeInData(employeeData, employeeId)) {
+        if (!isWithinStoreHours(currentWeekId, day, start, end)) {
+            const { openingTime, closingTime } = getStoreHours(currentWeekId, day);
+            throw new Error(`Schedule CSV row ${index + 2} falls outside ${getDayLabel(day)} store hours (${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}).`);
+        }
+        const employee = employeeId ? findEmployeeInData(employeeData, employeeId) : null;
+        if (employeeId && !employee) {
             throw new Error(`Schedule CSV references unknown employee ID "${employeeId}". Import that employee first.`);
+        }
+        const scheduleDate = getScheduleDateForDay(currentWeekId, day);
+        if (employee && isEmployeeOnTimeOff(employee, scheduleDate)) {
+            throw new Error(`Schedule CSV row ${index + 2}: ${employee.name || `Employee ${employeeId}`} has time off on ${formatEmployeeDate(scheduleDate)}.`);
         }
         if (employeeId) {
             const employeeDay = `${employeeId}:${day}`;
@@ -2886,6 +3032,7 @@ async function importCsvSections(sections) {
     if (sections.has("employees")) mergeEmployeeRows(nextEmployees, sections.get("employees"));
     if (sections.has("availability")) applyAvailabilityRows(nextEmployees, sections.get("availability"));
     if (sections.has("time_off")) applyTimeOffRows(nextEmployees, sections.get("time_off"));
+    const expiredTimeOffCount = timeOffDates.removeExpired(nextEmployees);
     if (sections.has("schedule")) {
         const selectedWeek = nextWeeks[currentWeekId];
         if (!selectedWeek || !selectedWeek.days) throw new Error("The selected week is not available.");
@@ -2907,7 +3054,7 @@ async function importCsvSections(sections) {
     const scheduleMessage = sections.has("schedule")
         ? "The selected week's schedule was updated; other weeks and local-only preferences were left unchanged."
         : "Existing schedules and local-only preferences were left unchanged.";
-    const importMessage = `Imported ${[...sections.keys()].join(", ")}. ${scheduleMessage}${recoloredCount ? ` ${recoloredCount} employee color(s) were reassigned to keep colors unique.` : ""}`;
+    const importMessage = `Imported ${[...sections.keys()].join(", ")}. ${scheduleMessage}${recoloredCount ? ` ${recoloredCount} employee color(s) were reassigned to keep colors unique.` : ""}${expiredTimeOffCount ? ` Removed ${expiredTimeOffCount} expired time-off period(s).` : ""}`;
     if (conflicts.removed.length || conflicts.locked.length) {
         showAvailabilityConflictResult(conflicts, importMessage);
     } else {
@@ -2940,8 +3087,12 @@ async function importScheduleJson(text) {
         if (existing) {
             existing.availability = imported.availability ?? null;
             existing.timeOff = Array.isArray(imported.timeOff) ? imported.timeOff : [];
+            if (existing.timeOff.some(period => !period || !isValidTimeOffRange(period.start_date, period.end_date))) {
+                throw new Error(`Employee ${existing.name || imported.id} has an invalid time-off date range in the JSON backup.`);
+            }
         }
     });
+    const expiredTimeOffCount = timeOffDates.removeExpired(nextEmployees);
 
     const sourceWeeks = Object.entries(importedData.scheduleWeeks);
     const currentDate = scheduleWeeks[currentWeekId].date;
@@ -2949,6 +3100,24 @@ async function importScheduleJson(text) {
     if (!sourceWeek || !sourceWeek.days) throw new Error("The JSON backup does not contain a valid week schedule.");
     const nextWeeks = cloneEmployeeData(scheduleWeeks);
     nextWeeks[currentWeekId].days = cloneEmployeeData(sourceWeek.days);
+    scheduleDays.forEach(day => {
+        Object.values(nextWeeks[currentWeekId].days[day.key] || {}).forEach(shiftInfo => {
+            const shift = shiftInfo && (shiftInfo.start_time && shiftInfo.end_time
+                ? shiftInfo
+                : defaultShifts[shiftInfo.shift]);
+            if (shift && !isWithinStoreHours(currentWeekId, day.key, shift.start_time, shift.end_time)) {
+                const { openingTime, closingTime } = getStoreHours(currentWeekId, day.key);
+                throw new Error(`The imported ${day.label} shift falls outside store hours (${formatScheduleTime(openingTime)}-${formatScheduleTime(closingTime)}).`);
+            }
+            const employeeId = getShiftEmployeeId(shiftInfo);
+            const employee = employeeId === null || employeeId === undefined
+                ? null : findEmployeeInData(nextEmployees, employeeId);
+            const scheduleDate = getScheduleDateForDay(currentWeekId, day.key);
+            if (employee && isEmployeeOnTimeOff(employee, scheduleDate)) {
+                throw new Error(`The imported ${day.label} shift conflicts with ${employee.name || `employee ${employeeId}`}'s time off on ${formatEmployeeDate(scheduleDate)}.`);
+            }
+        });
+    });
     normalizeImportedEmployeeColors(nextEmployees);
     commitImportedData(nextEmployees, nextWeeks);
     const importedEmployeeIds = new Set(importedEmployees.map(employee => String(employee.id)));
@@ -2957,7 +3126,7 @@ async function importScheduleJson(text) {
         renderScheduleGrid();
         updateScheduleControls();
     }
-    const importMessage = "Imported the JSON backup's employees and schedule into the selected week. Other weeks and local-only preferences were left unchanged.";
+    const importMessage = `Imported the JSON backup's employees and schedule into the selected week. Other weeks and local-only preferences were left unchanged.${expiredTimeOffCount ? ` Removed ${expiredTimeOffCount} expired time-off period(s).` : ""}`;
     if (conflicts.removed.length || conflicts.locked.length) {
         showAvailabilityConflictResult(conflicts, importMessage);
     } else {
